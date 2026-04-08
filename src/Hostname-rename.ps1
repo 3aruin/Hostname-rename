@@ -13,9 +13,9 @@
     Includes logging to network and local fallback.
 
 .NOTES
-    Author: Your Name
-    Org: RB | IEX
-    Version: 1.0.0
+    Author: 3aruin
+    Org: for RB
+    Version: 1.1.0
 #>
 
 param (
@@ -25,9 +25,41 @@ param (
     [switch]$NonInteractive
 )
 
-# --- Ensure local log directory exists ---
+if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Output "Hostname-rename needs to be run as Administrator. Attempting to relaunch."
+    $argList = @()
+
+    $PSBoundParameters.GetEnumerator() | ForEach-Object {
+        $argList += if ($_.Value -is [switch] -and $_.Value) {
+            "-$($_.Key)"
+        } elseif ($_.Value -is [array]) {
+            "-$($_.Key) $($_.Value -join ',')"
+        } elseif ($_.Value) {
+            "-$($_.Key) '$($_.Value)'"
+        }
+    }
+
+    $script = if ($PSCommandPath) {
+        "& { & `'$($PSCommandPath)`' $($argList -join ' ') }"
+    } else {
+        "&([ScriptBlock]::Create((irm https://github.com/3aruin/Hostname-rename/releases/latest/download/winutil.ps1))) $($argList -join ' ')"
+    }
+
+    $powershellCmd = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell" }
+    $processCmd = if (Get-Command wt.exe -ErrorAction SilentlyContinue) { "wt.exe" } else { "$powershellCmd" }
+
+    if ($processCmd -eq "wt.exe") {
+        Start-Process $processCmd -ArgumentList "$powershellCmd -ExecutionPolicy Bypass -NoProfile -Command `"$script`"" -Verb RunAs
+    } else {
+        Start-Process $processCmd -ArgumentList "-ExecutionPolicy Bypass -NoProfile -Command `"$script`"" -Verb RunAs
+    }
+
+    break
+}
+
+# --- Ensure Local Log Directory Exists ---
 $localDir = Split-Path $LocalLog
-if (!(Test-Path $localDir)) {
+if (-not (Test-Path $localDir)) {
     New-Item -Path $localDir -ItemType Directory | Out-Null
 }
 
@@ -42,21 +74,22 @@ $GatewayMap = @{
 }
 
 # --- Get Default Gateway ---
-$gateway = Get-CimInstance Win32_NetworkAdapterConfiguration |
+$gateway = (Get-CimInstance Win32_NetworkAdapterConfiguration |
     Where-Object { $_.IPEnabled -and $_.DefaultIPGateway } |
-    Select-Object -ExpandProperty DefaultIPGateway -First 1
+    Select-Object -ExpandProperty DefaultIPGateway -First 1)
 
 # --- Map Gateway ---
-if ($GatewayMap.ContainsKey($gateway)) {
-    $warehouse = $GatewayMap[$gateway].WH
-    $location  = $GatewayMap[$gateway].LOC
+$gatewayMapping = $GatewayMap[$gateway]
+if ($gatewayMapping) {
+    $warehouse = $gatewayMapping.WH
+    $location  = $gatewayMapping.LOC
 } else {
     $warehouse = "XX"
     $location  = "X"
 }
 
-# --- Department चयन (Prompt if interactive) ---
-$validDepartments = @("CS","SR","OP","HQ","IT")
+# --- Department Selection (Prompt if Interactive) ---
+$validDepartments = @("CS", "SR", "OP", "HQ", "IT")
 
 if ($NonInteractive) {
     $department = "IT"
@@ -67,58 +100,111 @@ if ($NonInteractive) {
 }
 
 # --- Detect Device Type ---
-$os = Get-CimInstance Win32_OperatingSystem
-$cs = Get-CimInstance Win32_ComputerSystem
+$detectedType = "DT"  # Default to DT in case of error
 
-if ($cs.Model -match "Virtual|VMware|VirtualBox|Hyper-V") {
-    $detectedType = "VM"
+try {
+    # Get the OS and Computer System instances once to reduce redundant calls
+    $os = Get-CimInstance Win32_OperatingSystem
+    $cs = Get-CimInstance Win32_ComputerSystem
+    $processor = Get-CimInstance Win32_Processor
+
+    # Detect Virtual Machine (VM)
+    if ($cs.Model -match "Virtual|VMware|VirtualBox|Hyper-V") {
+        $detectedType = "VM"
+    }
+    # Detect Server (SV)
+    elseif ($os.ProductType -ne 1) {  # Non-workstation types are typically Server
+        $detectedType = "SV"
+    }
+    # Detect Tablet or Mobile (MD)
+    elseif ($processor.Architecture -eq 5 -or $os.Caption -match "Windows.*ARM") {
+        $detectedType = "MD"
+    }
+    # Detect Embedded/IoT (ET)
+    elseif ($cs.Model -match "Embedded|IoT|ThinClient") {
+        $detectedType = "ET"
+    }
+    # Detect Laptop (LT)
+    elseif ($cs.Model -match "Laptop|Portable") {
+        $detectedType = "LT"
+    }
+    # Default to Desktop (DT)
+    else {
+        $chassis = Get-CimInstance Win32_SystemEnclosure
+        if ($chassis.ChassisTypes -match "9|10|14") {
+            $detectedType = "LT"
+        } else {
+            $detectedType = "DT"
+        }
+    }
 }
-elseif ($os.ProductType -ne 1) {
-    $detectedType = "SV"
-}
-else {
-    $chassis = (Get-CimInstance Win32_SystemEnclosure).ChassisTypes
-    if ($chassis -match "9|10|14") { $detectedType = "LT" } else { $detectedType = "DT" }
+catch {
+    # If any error occurs, default to DT
+    Write-Warning "Error detecting device type: $_"
 }
 
+# Final device type assignment
 $type = $detectedType
 
-# --- Optional Override (Interactive only) ---
-if (-not $NonInteractive) {
-    Write-Output "Detected Type: $detectedType"
-    Write-Output "Override? Y=Accept | 1=SV 2=LT 3=DT 4=VM"
+# --- Optional Override (Interactive Only) ---
+$deviceTypes = @("VM", "SV", "MD", "ET", "LT", "DT")
 
-    for ($i = 5; $i -gt 0; $i--) {
-        Write-Host "Auto-accept in $i..." -NoNewline "`r"
-        Start-Sleep 1
+# Display the device types and prompt for selection
+Write-Output "Select Device Type:"
+$deviceTypes | ForEach-Object { Write-Output "$($_): $($_)" }
 
-        if ([console]::KeyAvailable) {
-            $key = [console]::ReadKey($true).KeyChar
-            switch ($key.ToString().ToUpper()) {
-                "1" { $type = "SV" }
-                "2" { $type = "LT" }
-                "3" { $type = "DT" }
-                "4" { $type = "VM" }
-                default { $type = $detectedType }
-            }
-            break
-        }
+$selectedType = Read-Host "Enter Device Type (1 for VM, 2 for SV, 3 for MD, 4 for ET, 5 for LT, 6 for DT)"
+$selectedType = $selectedType.Trim()
+
+# Validate the user input
+switch ($selectedType) {
+    "1" { $detectedType = "VM" }
+    "2" { $detectedType = "SV" }
+    "3" { $detectedType = "MD" }
+    "4" { $detectedType = "ET" }
+    "5" { $detectedType = "LT" }
+    "6" { $detectedType = "DT" }
+    default {
+        Write-Output "Invalid input, defaulting to DT."
+        $detectedType = "DT"
     }
 }
 
 # --- Serial Handling ---
+Here’s the "full-proofed" version:
+
+# Retrieve the serial number of the system BIOS
 $serial = (Get-CimInstance Win32_BIOS).SerialNumber
+
+# Check if the serial number is null or empty
+if (-not $serial) {
+    Write-Error "Failed to retrieve BIOS serial number."
+    return
+}
+
+# Clean the serial number by removing non-alphanumeric characters and converting to uppercase
 $serialClean = ($serial -replace '[^a-zA-Z0-9]', '').ToUpper()
 
+# Ensure the cleaned serial number isn't empty after cleaning
+if (-not $serialClean) {
+    Write-Error "Serial number is empty after cleaning."
+    return
+}
+
+# Retrieve the last 4 characters or pad with zeroes if the string is shorter than 4 characters
 $serialLast4 = if ($serialClean.Length -ge 4) {
     $serialClean.Substring($serialClean.Length - 4)
 } else {
-    $serialClean.PadLeft(4,"0")
+    $serialClean.PadLeft(4, '0')
 }
 
-# --- Build Name ---
+# Output the cleaned last 4 characters of the serial number
+$serialLast4
+
+# --- Build New Name ---
 $newName = "$Org$warehouse$location-$department$type-$serialLast4"
 
+# Ensure the new name does not exceed 15 characters
 if ($newName.Length -gt 15) {
     $newName = "$Org$warehouse$location-$type-$serialLast4"
 }
@@ -145,7 +231,7 @@ function Write-Log {
     param ($Path, $Data)
 
     try {
-        if (!(Test-Path $Path)) {
+        if (-not (Test-Path $Path)) {
             $Data | Export-Csv -Path $Path -NoTypeInformation
         } else {
             $Data | Export-Csv -Path $Path -NoTypeInformation -Append
@@ -161,7 +247,7 @@ Write-Log -Path $LocalLog   -Data $logObject
 
 Write-Output "New Name: $newName"
 
-# --- Rename पुष्टि ---
+# --- Rename Confirmation ---
 if ($NonInteractive) {
     Rename-Computer -NewName $newName -Force -Restart
 } else {

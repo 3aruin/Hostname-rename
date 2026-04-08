@@ -15,7 +15,7 @@
 .NOTES
     Author: 3aruin
     Org: for RB
-    Version: 1.1.0
+    Version: 1.1.1
 #>
 
 param (
@@ -25,36 +25,101 @@ param (
     [switch]$NonInteractive
 )
 
-if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Output "Hostname-rename needs to be run as Administrator. Attempting to relaunch."
+if (Invoke-SelfElevation -FallbackUrl "https://raw.githubusercontent.com/3aruin/Hostname-rename/main/src/Hostname-rename.ps1") {
+    return
+}
+function Invoke-SelfElevation {
+    [CmdletBinding()]
+    param(
+        [string]$FallbackUrl
+    )
+
+    # Check for admin rights
+    $isAdmin = ([Security.Principal.WindowsPrincipal] 
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    if ($isAdmin) {
+        return $false  # Already elevated
+    }
+
+    Write-Output "Elevation required. Relaunching as Administrator..."
+
+    # Build argument list safely
     $argList = @()
 
-    $PSBoundParameters.GetEnumerator() | ForEach-Object {
-        $argList += if ($_.Value -is [switch] -and $_.Value) {
-            "-$($_.Key)"
-        } elseif ($_.Value -is [array]) {
-            "-$($_.Key) $($_.Value -join ',')"
-        } elseif ($_.Value) {
-            "-$($_.Key) '$($_.Value)'"
+    foreach ($param in $PSBoundParameters.GetEnumerator()) {
+        if ($param.Key -eq "FallbackUrl") { continue }
+
+        if ($param.Value -is [switch]) {
+            if ($param.Value) {
+                $argList += "-$($param.Key)"
+            }
+        }
+        elseif ($param.Value -is [array]) {
+            foreach ($val in $param.Value) {
+                $argList += "-$($param.Key)"
+                $argList += "$val"
+            }
+        }
+        else {
+            $argList += "-$($param.Key)"
+            $argList += "$($param.Value)"
         }
     }
 
-    $script = if ($PSCommandPath) {
-        "& { & `'$($PSCommandPath)`' $($argList -join ' ') }"
+    # Determine PowerShell executable
+    $powershellCmd = if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+        "pwsh"
     } else {
-        "&([ScriptBlock]::Create((irm https://github.com/3aruin/Hostname-rename/releases/latest/download/winutil.ps1))) $($argList -join ' ')"
+        "powershell"
     }
 
-    $powershellCmd = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell" }
-    $processCmd = if (Get-Command wt.exe -ErrorAction SilentlyContinue) { "wt.exe" } else { "$powershellCmd" }
-
-    if ($processCmd -eq "wt.exe") {
-        Start-Process $processCmd -ArgumentList "$powershellCmd -ExecutionPolicy Bypass -NoProfile -Command `"$script`"" -Verb RunAs
+    # Prefer Windows Terminal if available
+    $processCmd = if (Get-Command wt.exe -ErrorAction SilentlyContinue) {
+        "wt.exe"
     } else {
-        Start-Process $processCmd -ArgumentList "-ExecutionPolicy Bypass -NoProfile -Command `"$script`"" -Verb RunAs
+        $powershellCmd
     }
 
-    break
+    # Case 1: Running from script file → use -File (SAFE)
+    if ($PSCommandPath) {
+
+        $baseArgs = @(
+            "-ExecutionPolicy", "Bypass",
+            "-NoProfile",
+            "-File", $PSCommandPath
+        ) + $argList
+
+        if ($processCmd -eq "wt.exe") {
+            $finalArgs = "$powershellCmd " + ($baseArgs -join ' ')
+        }
+        else {
+            $finalArgs = $baseArgs
+        }
+    }
+    # Case 2: No script path → fallback to remote
+    elseif ($FallbackUrl) {
+
+        $escapedUrl = $FallbackUrl -replace "'", "''"
+
+        $command = "&([ScriptBlock]::Create((irm '$escapedUrl'))) $($argList -join ' ')"
+
+        if ($processCmd -eq "wt.exe") {
+            $finalArgs = "$powershellCmd -ExecutionPolicy Bypass -NoProfile -Command `"$command`""
+        }
+        else {
+            $finalArgs = "-ExecutionPolicy Bypass -NoProfile -Command `"$command`""
+        }
+    }
+    else {
+        throw "Cannot self-elevate: no script path or fallback URL provided."
+    }
+
+    # Launch elevated process
+    Start-Process $processCmd -ArgumentList $finalArgs -Verb RunAs
+
+    return $true
 }
 
 # --- Ensure Local Log Directory Exists ---

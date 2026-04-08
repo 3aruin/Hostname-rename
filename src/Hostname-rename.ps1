@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Device Renaming Script (IEX Standard)
+    Device Renaming Script
 
 .DESCRIPTION
     Automatically renames a device based on:
@@ -15,7 +15,7 @@
 .NOTES
     Author: 3aruin
     Org: for RB
-    Version: 1.1.1
+    Version: 1.1.2
 #>
 
 param (
@@ -143,6 +143,11 @@ $gateway = (Get-CimInstance Win32_NetworkAdapterConfiguration |
     Where-Object { $_.IPEnabled -and $_.DefaultIPGateway } |
     Select-Object -ExpandProperty DefaultIPGateway -First 1)
 
+if (-not $gateway) {
+    Write-Error "Unable to determine default gateway."
+    return
+}
+
 # --- Map Gateway ---
 $gatewayMapping = $GatewayMap[$gateway]
 if ($gatewayMapping) {
@@ -156,14 +161,21 @@ if ($gatewayMapping) {
 # --- Department Selection (Prompt if Interactive) ---
 $validDepartments = @("CS", "SR", "OP", "HQ", "IT")
 
+# If $NonInteractive is $true, set the department to WS automatically
 if ($NonInteractive) {
-    $department = "IT"
+    $department = "WS"
 } else {
+    # Loop until the user provides a valid department
     do {
         $department = (Read-Host "Enter Department (CS, SR, OP, HQ, IT)").ToUpper()
+        
+        if ($validDepartments -contains $department) {
+            break  # Valid input, exit the loop
+        } else {
+            Write-Host "Invalid department. Please choose from CS, SR, OP, HQ, IT."
+        }
     } until ($validDepartments -contains $department)
 }
-
 # --- Detect Device Type ---
 $detectedType = "DT"  # Default to DT in case of error
 
@@ -236,12 +248,11 @@ switch ($selectedType) {
 }
 
 # --- Serial Handling ---
-Here’s the "full-proofed" version:
 
-# Retrieve the serial number of the system BIOS
+# Retrieve the BIOS serial number
 $serial = (Get-CimInstance Win32_BIOS).SerialNumber
 
-# Check if the serial number is null or empty
+# Check if the serial number was successfully retrieved
 if (-not $serial) {
     Write-Error "Failed to retrieve BIOS serial number."
     return
@@ -250,20 +261,21 @@ if (-not $serial) {
 # Clean the serial number by removing non-alphanumeric characters and converting to uppercase
 $serialClean = ($serial -replace '[^a-zA-Z0-9]', '').ToUpper()
 
-# Ensure the cleaned serial number isn't empty after cleaning
+# Check if the serial number is empty after cleaning
 if (-not $serialClean) {
     Write-Error "Serial number is empty after cleaning."
     return
 }
 
-# Retrieve the last 4 characters or pad with zeroes if the string is shorter than 4 characters
+# Extract the last 4 characters of the serial number, or pad with zeros if it's shorter than 4 characters
 $serialLast4 = if ($serialClean.Length -ge 4) {
     $serialClean.Substring($serialClean.Length - 4)
 } else {
+    # If serial number is too short, pad with leading zeros
     $serialClean.PadLeft(4, '0')
 }
 
-# Output the cleaned last 4 characters of the serial number
+# Return the last 4 characters
 $serialLast4
 
 # --- Build New Name ---

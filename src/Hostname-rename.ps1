@@ -15,7 +15,7 @@
 .NOTES
     Author: 3aruin
     Org: for RB
-    Version: 1.2.2
+    Version: 1.2.3
 #>
  
 # --- Script-level Constants ---
@@ -131,7 +131,6 @@ function Write-Log {
  
 # --- Parameters ---
 param (
-
     [ValidateNotNullOrEmpty()]
     [string]$NetworkLog = "\\YourServer\Logs\RenameLog.csv",
  

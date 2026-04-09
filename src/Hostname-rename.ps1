@@ -15,19 +15,19 @@
 .NOTES
     Author: 3aruin
     Org: for RB
-    Version: 1.2.0-Sonnet
+    Version: 1.2.2
 #>
  
 # --- Script-level Constants ---
 $VALID_DEPARTMENTS = @("CS", "SR", "OP", "HQ", "IT", "WS")
 $DEVICE_TYPES      = @("VM", "SV", "MD", "ET", "LT", "DT")
 $GATEWAY_MAP = @{
-    "10.72.0.1" = @{ WH = "00"; LOC = "A" }
-    "10.72.1.1" = @{ WH = "01"; LOC = "R" }
-    "10.72.2.1" = @{ WH = "02"; LOC = "W" }
-    "10.72.3.1" = @{ WH = "03"; LOC = "F" }
-    "10.72.4.1" = @{ WH = "04"; LOC = "C" }
-    "10.72.9.1" = @{ WH = "09"; LOC = "S" }
+    "10.72.0.1" = @{ ORG = "RB"; WH = "00"; LOC = "A" }
+    "10.72.1.1" = @{ ORG = "RB"; WH = "00"; LOC = "R" }
+    "10.72.2.1" = @{ ORG = "RB"; WH = "02"; LOC = "W" }
+    "10.72.3.1" = @{ ORG = "RB"; WH = "00"; LOC = "F" }
+    "10.72.4.1" = @{ ORG = "RB"; WH = "04"; LOC = "C" }
+    "10.72.9.1" = @{ ORG = "RB"; WH = "00"; LOC = "S" }
 }
  
 # --- Function Definitions ---
@@ -131,9 +131,7 @@ function Write-Log {
  
 # --- Parameters ---
 param (
-    [ValidateNotNullOrEmpty()]
-    [string]$Org = "RB",
- 
+
     [ValidateNotNullOrEmpty()]
     [string]$NetworkLog = "\\YourServer\Logs\RenameLog.csv",
  
@@ -173,9 +171,11 @@ if (-not $gateway) {
 # --- Map Gateway ---
 $gatewayMapping = $GATEWAY_MAP[$gateway]
 if ($gatewayMapping) {
+    $organization = $gatewayMapping.ORG
     $warehouse = $gatewayMapping.WH
     $location  = $gatewayMapping.LOC
 } else {
+    $organization = "RS"
     $warehouse = "XX"
     $location  = "X"
 }
@@ -266,9 +266,9 @@ $serialLast4 = if ($serialClean.Length -ge 4) {
 }
  
 # --- Build New Name ---
-$newName = "$Org$warehouse$location-$department$type-$serialLast4"
+$newName = "$organization$warehouse$location-$department$type-$serialLast4"
 if ($newName.Length -gt 15) {
-    $newName = "$Org$warehouse$location-$type-$serialLast4"
+    $newName = "$organization$warehouse$location-$type-$serialLast4"
 }
 if ($newName.Length -gt 15) {
     throw "Generated name exceeds 15 characters: $newName"

@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Device Renaming Script
-
+ 
 .DESCRIPTION
     Automatically renames a device based on:
     - Organization
@@ -9,15 +9,15 @@
     - Department
     - Device Type
     - Serial Number (last 4)
-
+ 
     Includes logging to network and local fallback.
-
+ 
 .NOTES
     Author: 3aruin
     Org: for RB
-    Version: 1.1.7
+    Version: 1.2.0-Sonnet
 #>
-
+ 
 # --- Script-level Constants ---
 $VALID_DEPARTMENTS = @("CS", "SR", "OP", "HQ", "IT", "WS")
 $DEVICE_TYPES      = @("VM", "SV", "MD", "ET", "LT", "DT")
@@ -29,24 +29,8 @@ $GATEWAY_MAP = @{
     "10.72.4.1" = @{ WH = "04"; LOC = "C" }
     "10.72.9.1" = @{ WH = "09"; LOC = "S" }
 }
-
-param (
-    [ValidateNotNullOrEmpty()]
-    [string]$Org = "RB",
-
-    [ValidateNotNullOrEmpty()]
-    [string]$NetworkLog = "\\YourServer\Logs\RenameLog.csv",
-
-    [ValidateNotNullOrEmpty()]
-    [string]$LocalLog = "C:\Temp\RenameLog.csv",
-
-    [switch]$NonInteractive
-)
-
-if (Invoke-SelfElevation -FallbackUrl "https://raw.githubusercontent.com/3aruin/Hostname-rename/main/src/Hostname-rename.ps1") {
-    return
-}
-
+ 
+# --- Function Definitions ---
 function Invoke-SelfElevation {
     <#
     .SYNOPSIS
@@ -58,18 +42,18 @@ function Invoke-SelfElevation {
     param(
         [string]$FallbackUrl
     )
-
+ 
     # Check for admin rights
     $isAdmin = ([Security.Principal.WindowsPrincipal] (
         [Security.Principal.WindowsIdentity]::GetCurrent()
     )).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
+ 
     if ($isAdmin) {
         return $false  # Already elevated
     }
-
+ 
     Write-Verbose "Elevation required. Relaunching as Administrator..."
-
+ 
     $argList = @()
     foreach ($param in $PSBoundParameters.GetEnumerator()) {
         if ($param.Key -eq "FallbackUrl") { continue }
@@ -89,17 +73,17 @@ function Invoke-SelfElevation {
             $argList += "$($param.Value)"
         }
     }
-
+ 
     $powershellCmd = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell" }
     $processCmd    = if (Get-Command wt.exe -ErrorAction SilentlyContinue) { "wt.exe" } else { $powershellCmd }
-
+ 
     if ($PSCommandPath) {
         $baseArgs = @(
             "-ExecutionPolicy", "Bypass",
             "-NoProfile",
             "-File", "`"$PSCommandPath`""
         ) + $argList
-
+ 
         $finalArgs = if ($processCmd -eq "wt.exe") {
             "$powershellCmd " + ($baseArgs -join ' ')
         } else {
@@ -118,11 +102,52 @@ function Invoke-SelfElevation {
     else {
         throw "Cannot self-elevate: no script path or fallback URL provided."
     }
-
+ 
     Start-Process $processCmd -ArgumentList $finalArgs -Verb RunAs
     return $true
 }
-
+ 
+function Write-Log {
+    <#
+    .SYNOPSIS
+        Writes log data to a CSV file.
+    .PARAMETER Path
+        Path to the log file.
+    .PARAMETER Data
+        Data to write (PSCustomObject).
+    #>
+    param ($Path, $Data)
+ 
+    try {
+        if (-not (Test-Path $Path)) {
+            $Data | Export-Csv -Path $Path -NoTypeInformation
+        } else {
+            $Data | Export-Csv -Path $Path -NoTypeInformation -Append
+        }
+    } catch {
+        Write-Warning "Failed to write log to $($Path): $($_.Exception.Message)"
+    }
+}
+ 
+# --- Parameters ---
+param (
+    [ValidateNotNullOrEmpty()]
+    [string]$Org = "RB",
+ 
+    [ValidateNotNullOrEmpty()]
+    [string]$NetworkLog = "\\YourServer\Logs\RenameLog.csv",
+ 
+    [ValidateNotNullOrEmpty()]
+    [string]$LocalLog = "C:\Temp\RenameLog.csv",
+ 
+    [switch]$NonInteractive
+)
+ 
+# --- Entry Point ---
+if (Invoke-SelfElevation -FallbackUrl "https://raw.githubusercontent.com/3aruin/Hostname-rename/main/src/Hostname-rename.ps1") {
+    return
+}
+ 
 # --- Ensure Local Log Directory Exists ---
 $localDir = Split-Path $LocalLog
 if (-not (Test-Path $localDir)) {
@@ -134,17 +159,17 @@ if (-not (Test-Path $localDir)) {
         return
     }
 }
-
+ 
 # --- Get Default Gateway ---
 $gateway = (Get-CimInstance Win32_NetworkAdapterConfiguration |
     Where-Object { $_.IPEnabled -and $_.DefaultIPGateway } |
     Select-Object -ExpandProperty DefaultIPGateway -First 1)
-
+ 
 if (-not $gateway) {
     Write-Error "Unable to determine default gateway."
     return
 }
-
+ 
 # --- Map Gateway ---
 $gatewayMapping = $GATEWAY_MAP[$gateway]
 if ($gatewayMapping) {
@@ -154,7 +179,7 @@ if ($gatewayMapping) {
     $warehouse = "XX"
     $location  = "X"
 }
-
+ 
 # --- Department Selection ---
 if ($NonInteractive) {
     $department = "WS"
@@ -169,14 +194,14 @@ if ($NonInteractive) {
         }
     } until ($VALID_DEPARTMENTS -contains $department)
 }
-
+ 
 # --- Device Type Detection ---
 $detectedType = "DT"  # Default to DT
 try {
     $os = Get-CimInstance Win32_OperatingSystem
     $cs = Get-CimInstance Win32_ComputerSystem
     $processor = Get-CimInstance Win32_Processor
-
+ 
     if ($cs.Model -match "Virtual|VMware|VirtualBox|Hyper-V") {
         $detectedType = "VM"
     }
@@ -204,7 +229,7 @@ try {
 catch {
     Write-Warning "Error detecting device type: $($_.Exception.Message)"
 }
-
+ 
 # --- Interactive Device Type Override ---
 if (-not $NonInteractive) {
     Write-Output "Detected Device Type: $detectedType"
@@ -218,7 +243,7 @@ if (-not $NonInteractive) {
     }
 }
 $type = $detectedType
-
+ 
 # --- Serial Handling ---
 try {
     $serial = (Get-CimInstance Win32_BIOS).SerialNumber
@@ -239,7 +264,7 @@ $serialLast4 = if ($serialClean.Length -ge 4) {
 } else {
     $serialClean.PadLeft(4, '0')
 }
-
+ 
 # --- Build New Name ---
 $newName = "$Org$warehouse$location-$department$type-$serialLast4"
 if ($newName.Length -gt 15) {
@@ -248,30 +273,7 @@ if ($newName.Length -gt 15) {
 if ($newName.Length -gt 15) {
     throw "Generated name exceeds 15 characters: $newName"
 }
-
-# --- Logging Function ---
-function Write-Log {
-    <#
-    .SYNOPSIS
-        Writes log data to a CSV file.
-    .PARAMETER Path
-        Path to the log file.
-    .PARAMETER Data
-        Data to write (PSCustomObject).
-    #>
-    param ($Path, $Data)
-
-    try {
-        if (-not (Test-Path $Path)) {
-            $Data | Export-Csv -Path $Path -NoTypeInformation
-        } else {
-            $Data | Export-Csv -Path $Path -NoTypeInformation -Append
-        }
-    } catch {
-        Write-Warning "Failed to write log to $($Path): $($_.Exception.Message)"
-    }
-}
-
+ 
 # --- Logging Object ---
 $logObject = [PSCustomObject]@{
     Timestamp  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -284,13 +286,13 @@ $logObject = [PSCustomObject]@{
     Department = $department
     Type       = $type
 }
-
+ 
 # --- Write Logs ---
 Write-Log -Path $NetworkLog -Data $logObject
 Write-Log -Path $LocalLog   -Data $logObject
-
+ 
 Write-Output "New computer name will be: $newName"
-
+ 
 # --- Rename Confirmation ---
 if ($NonInteractive) {
     try {

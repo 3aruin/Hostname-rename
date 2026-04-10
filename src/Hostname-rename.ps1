@@ -15,19 +15,32 @@
 .NOTES
     Author: 3aruin
     Org: for RB
-    Version: 1.2.4
+    Version: 1.3.0
 #>
+ 
+# --- Parameters ---
+# Must be the first executable statement in the script.
+param (
+    [ValidateNotNullOrEmpty()]
+    [string]$NetworkLog = "\\YourServer\Logs\RenameLog.csv",
+ 
+    [ValidateNotNullOrEmpty()]
+    [string]$LocalLog = "C:\Temp\RenameLog.csv",
+ 
+    [switch]$NonInteractive
+)
  
 # --- Script-level Constants ---
 $VALID_DEPARTMENTS = @("CS", "SR", "OP", "HQ", "IT", "WS")
 $DEVICE_TYPES      = @("VM", "SV", "MD", "ET", "LT", "DT")
 $GATEWAY_MAP = @{
+    # FIX: WH values corrected - 10.72.1.1/3.1/9.1 had "00" (copy-paste error)
     "10.72.0.1" = @{ ORG = "RB"; WH = "00"; LOC = "A" }
-    "10.72.1.1" = @{ ORG = "RB"; WH = "00"; LOC = "R" }
+    "10.72.1.1" = @{ ORG = "RB"; WH = "01"; LOC = "R" }
     "10.72.2.1" = @{ ORG = "RB"; WH = "02"; LOC = "W" }
-    "10.72.3.1" = @{ ORG = "RB"; WH = "00"; LOC = "F" }
+    "10.72.3.1" = @{ ORG = "RB"; WH = "03"; LOC = "F" }
     "10.72.4.1" = @{ ORG = "RB"; WH = "04"; LOC = "C" }
-    "10.72.9.1" = @{ ORG = "RB"; WH = "00"; LOC = "S" }
+    "10.72.9.1" = @{ ORG = "RB"; WH = "09"; LOC = "S" }
 }
  
 # --- Function Definitions ---
@@ -36,11 +49,19 @@ function Invoke-SelfElevation {
     .SYNOPSIS
         Relaunches the script as administrator, if necessary.
     .PARAMETER FallbackUrl
-        URL to fetch the script content from if not running from a file.
+        URL to fetch the script content from if not running from a file (iex mode).
+    .PARAMETER ScriptParams
+        The calling script's $PSBoundParameters hashtable, forwarded to the
+        elevated process so all parameter values survive the relaunch.
     #>
     [CmdletBinding()]
     param(
-        [string]$FallbackUrl
+        [string]$FallbackUrl,
+ 
+        # FIX: Accept the script-level params explicitly so they are correctly
+        # forwarded during elevation. Previously $PSBoundParameters was read
+        # inside this function, which only ever contained 'FallbackUrl'.
+        [hashtable]$ScriptParams = @{}
     )
  
     # Check for admin rights
@@ -54,23 +75,23 @@ function Invoke-SelfElevation {
  
     Write-Verbose "Elevation required. Relaunching as Administrator..."
  
+    # Build argument list from the SCRIPT's params, not the function's
     $argList = @()
-    foreach ($param in $PSBoundParameters.GetEnumerator()) {
-        if ($param.Key -eq "FallbackUrl") { continue }
-        if ($param.Value -is [switch]) {
-            if ($param.Value) {
-                $argList += "-$($param.Key)"
+    foreach ($entry in $ScriptParams.GetEnumerator()) {
+        if ($entry.Value -is [switch]) {
+            if ($entry.Value) {
+                $argList += "-$($entry.Key)"
             }
         }
-        elseif ($param.Value -is [array]) {
-            foreach ($val in $param.Value) {
-                $argList += "-$($param.Key)"
+        elseif ($entry.Value -is [array]) {
+            foreach ($val in $entry.Value) {
+                $argList += "-$($entry.Key)"
                 $argList += "$val"
             }
         }
         else {
-            $argList += "-$($param.Key)"
-            $argList += "$($param.Value)"
+            $argList += "-$($entry.Key)"
+            $argList += "$($entry.Value)"
         }
     }
  
@@ -78,6 +99,7 @@ function Invoke-SelfElevation {
     $processCmd    = if (Get-Command wt.exe -ErrorAction SilentlyContinue) { "wt.exe" } else { $powershellCmd }
  
     if ($PSCommandPath) {
+        # Running from a saved .ps1 file - relaunch the file directly
         $baseArgs = @(
             "-ExecutionPolicy", "Bypass",
             "-NoProfile",
@@ -91,8 +113,11 @@ function Invoke-SelfElevation {
         }
     }
     elseif ($FallbackUrl) {
+        # FIX: Running via iex (irm 'url') - no $PSCommandPath exists.
+        # Re-download and invoke the script in the elevated session,
+        # forwarding all script params via $argList.
         $escapedUrl = $FallbackUrl -replace "'", "''"
-        $command = "&([ScriptBlock]::Create((irm '$escapedUrl'))) $($argList -join ' ')"
+        $command = "iex (irm '$escapedUrl') $($argList -join ' ')"
         $finalArgs = if ($processCmd -eq "wt.exe") {
             "$powershellCmd -ExecutionPolicy Bypass -NoProfile -Command `"$command`""
         } else {
@@ -129,16 +154,10 @@ function Write-Log {
     }
 }
  
-# --- Parameters ---
-param (
-    [ValidateNotNullOrEmpty()]
-    [string]$LocalLog = "C:\Temp\RenameLog.csv",
- 
-    [switch]$NonInteractive
-)
- 
 # --- Entry Point ---
-if (Invoke-SelfElevation -FallbackUrl "https://raw.githubusercontent.com/3aruin/Hostname-rename/main/src/Hostname-rename.ps1") {
+# FIX: Pass $PSBoundParameters (script scope) explicitly so the elevated
+# relaunch receives the correct -NetworkLog, -LocalLog, -NonInteractive values.
+if (Invoke-SelfElevation -FallbackUrl "https://raw.githubusercontent.com/3aruin/Hostname-rename/main/src/Hostname-rename.ps1" -ScriptParams $PSBoundParameters) {
     return
 }
  
@@ -168,12 +187,13 @@ if (-not $gateway) {
 $gatewayMapping = $GATEWAY_MAP[$gateway]
 if ($gatewayMapping) {
     $organization = $gatewayMapping.ORG
-    $warehouse = $gatewayMapping.WH
-    $location  = $gatewayMapping.LOC
+    $warehouse    = $gatewayMapping.WH
+    $location     = $gatewayMapping.LOC
 } else {
-    $organization = "RS"
-    $warehouse = "XX"
-    $location  = "X"
+    # FIX: Fallback org was "RS" (typo) - corrected to "RB"
+    $organization = "RB"
+    $warehouse    = "XX"
+    $location     = "X"
 }
  
 # --- Department Selection ---
@@ -194,8 +214,8 @@ if ($NonInteractive) {
 # --- Device Type Detection ---
 $detectedType = "DT"  # Default to DT
 try {
-    $os = Get-CimInstance Win32_OperatingSystem
-    $cs = Get-CimInstance Win32_ComputerSystem
+    $os        = Get-CimInstance Win32_OperatingSystem
+    $cs        = Get-CimInstance Win32_ComputerSystem
     $processor = Get-CimInstance Win32_Processor
  
     if ($cs.Model -match "Virtual|VMware|VirtualBox|Hyper-V") {
@@ -272,15 +292,16 @@ if ($newName.Length -gt 15) {
  
 # --- Logging Object ---
 $logObject = [PSCustomObject]@{
-    Timestamp  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    User       = $env:USERNAME
-    OldName    = $env:COMPUTERNAME
-    NewName    = $newName
-    Gateway    = $gateway
-    Warehouse  = $warehouse
-    Location   = $location
-    Department = $department
-    Type       = $type
+    Timestamp    = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    User         = $env:USERNAME
+    OldName      = $env:COMPUTERNAME
+    NewName      = $newName
+    Gateway      = $gateway
+    Organization = $organization
+    Warehouse    = $warehouse
+    Location     = $location
+    Department   = $department
+    Type         = $type
 }
  
 # --- Write Logs ---

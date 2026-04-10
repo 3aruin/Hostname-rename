@@ -15,7 +15,7 @@
 .NOTES
     Author: 3aruin
     Org: for RB
-    Version: 1.3.0
+    Version: 1.3.1
 #>
  
 # --- Parameters ---
@@ -58,9 +58,6 @@ function Invoke-SelfElevation {
     param(
         [string]$FallbackUrl,
  
-        # FIX: Accept the script-level params explicitly so they are correctly
-        # forwarded during elevation. Previously $PSBoundParameters was read
-        # inside this function, which only ever contained 'FallbackUrl'.
         [hashtable]$ScriptParams = @{}
     )
  
@@ -190,8 +187,7 @@ if ($gatewayMapping) {
     $warehouse    = $gatewayMapping.WH
     $location     = $gatewayMapping.LOC
 } else {
-    # FIX: Fallback org was "RS" (typo) - corrected to "RB"
-    $organization = "RB"
+    $organization = "RS"
     $warehouse    = "XX"
     $location     = "X"
 }
@@ -319,7 +315,7 @@ if ($NonInteractive) {
         Write-Error "Failed to rename computer: $($_.Exception.Message)"
     }
 } else {
-    $confirm = Read-Host "Proceed with rename? (Y/N)"
+    $confirm = Read-Host "Please note: Windows will restart automatically as part of this system rename. Proceed with rename? (Y/N)"
     if ($confirm -match "^[Yy]") {
         try {
             Rename-Computer -NewName $newName -Force -Restart

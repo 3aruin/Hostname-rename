@@ -1,12 +1,12 @@
 # device.ps1
 # Handles: department selection, device type detection, serial number retrieval
 
-# ── Valid Values ──────────────────────────────────────────────────────────────
+# -- Valid Values -------------------------------------------------------------
 # Extend these arrays as new departments or device classes are introduced.
 
 $script:VALID_DEPARTMENTS = @("CS", "SR", "OP", "HQ", "IT", "WS")
 $script:DEVICE_TYPES      = @("VM", "SV", "MD", "ET", "LT", "DT")
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Get-Department {
     <#
@@ -32,25 +32,32 @@ function Get-DeviceType {
     <#
     .SYNOPSIS
         Auto-detects device type from WMI, then optionally allows an override.
-        Detection order: Virtual Machine → Server → Mobile → Laptop → Desktop (default).
+
+    .NOTES
+        Detection order:
+          Virtual Machine  -- Win32_ComputerSystem.Model contains "Virtual"
+          Server           -- Win32_OperatingSystem.ProductType is not 1 (Workstation)
+          Mobile/ARM       -- Win32_Processor.Architecture eq 5 (ARM)
+          Laptop           -- Win32_ComputerSystem.Model contains "Laptop"
+          Desktop          -- default fallback
     #>
     param (
         [switch]$NonInteractive
     )
 
-    $type = "DT"   # default
+    $type = "DT"    # default
 
     try {
         $os  = Get-CimInstance Win32_OperatingSystem
         $cs  = Get-CimInstance Win32_ComputerSystem
         $cpu = Get-CimInstance Win32_Processor
 
-        if    ($cs.Model      -match "Virtual") { $type = "VM" }
-        elseif ($os.ProductType -ne 1)          { $type = "SV" }
-        elseif ($cpu.Architecture -eq 5)        { $type = "MD" }
-        elseif ($cs.Model      -match "Laptop") { $type = "LT" }
+        if    ($cs.Model       -match "Virtual") { $type = "VM" }
+        elseif ($os.ProductType -ne 1)           { $type = "SV" }
+        elseif ($cpu.Architecture -eq 5)         { $type = "MD" }
+        elseif ($cs.Model       -match "Laptop") { $type = "LT" }
     } catch {
-        Write-Warning "WMI query failed during device type detection — defaulting to DT."
+        Write-Warning "WMI query failed during device type detection -- defaulting to DT."
     }
 
     if (-not $NonInteractive) {

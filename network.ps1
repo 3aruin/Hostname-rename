@@ -1,9 +1,9 @@
 # network.ps1
 # Handles: gateway detection, network context resolution, folder context, user profile path
 
-# ── Gateway Map ───────────────────────────────────────────────────────────────
+# -- Gateway Map --------------------------------------------------------------
 # Add new sites here. Each key is a default gateway IP.
-# ORG = organisation code, WH = warehouse/site number, LOC = location letter
+# ORG = organisation code, WH = two-digit warehouse/site number, LOC = location letter
 
 $script:GATEWAY_MAP = @{
     "10.72.0.1" = @{ ORG = "RB"; WH = "00"; LOC = "A" }
@@ -13,7 +13,7 @@ $script:GATEWAY_MAP = @{
     "10.72.4.1" = @{ ORG = "RB"; WH = "04"; LOC = "C" }
     "10.72.9.1" = @{ ORG = "RB"; WH = "09"; LOC = "S" }
 }
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Get-DefaultGateway {
     <#
@@ -38,19 +38,22 @@ function Get-NetworkContext {
     $mapping = $script:GATEWAY_MAP[$Gateway]
     if ($mapping) { return $mapping }
 
-    Write-Warning "Gateway '$Gateway' not in GATEWAY_MAP — using fallback context (RS/XX/X)."
-    return @{ ORG = "RS"; WH = "XX"; LOC = "X" }
+    Write-Warning "Gateway '$Gateway' not found in GATEWAY_MAP -- using fallback context (RS/99/X)."
+    return @{ ORG = "RS"; WH = "99"; LOC = "X" }
 }
 
 function Get-UserProfilePath {
     <#
     .SYNOPSIS
         Returns the C:\Users\<name> path for a matched local user.
-        If Username is omitted, picks the first enabled local user.
+        If Username is omitted, picks the first enabled non-system local user.
     #>
     param (
         [string]$Username = ""
     )
+
+    # Exclude common built-in accounts when no specific username is requested
+    $systemAccounts = @("Administrator", "DefaultAccount", "Guest", "WDAGUtilityAccount")
 
     if ($Username) {
         $user = Get-LocalUser |
@@ -58,7 +61,7 @@ function Get-UserProfilePath {
             Select-Object -First 1
     } else {
         $user = Get-LocalUser |
-            Where-Object { $_.Enabled } |
+            Where-Object { $_.Enabled -and $_.Name -notin $systemAccounts } |
             Select-Object -First 1
     }
 
@@ -77,7 +80,11 @@ function Get-FolderContext {
     <#
     .SYNOPSIS
         Derives ORG/WH/LOC context from a folder name chosen under BasePath.
-        In NonInteractive mode, the first folder is used automatically.
+        In NonInteractive mode the first folder is used automatically.
+
+    .NOTES
+        ORG is currently hardcoded to "RB" for single-organisation deployments.
+        TODO: If multi-org support is needed, derive ORG from GATEWAY_MAP or a parameter.
     #>
     param (
         [string]$BasePath,
@@ -108,7 +115,7 @@ function Get-FolderContext {
         $selected = $folders[[int]$choice - 1].Name
     }
 
-    # Strip non-alphanumeric, uppercase, cap at 15 chars
+    # Strip non-alphanumeric characters, uppercase, cap at 15 chars
     $clean = ($selected -replace '[^a-zA-Z0-9]', '').ToUpper()
     $clean = $clean.Substring(0, [Math]::Min(15, $clean.Length))
 

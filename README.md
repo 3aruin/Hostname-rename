@@ -1,6 +1,6 @@
 # Hostname-Rename
 
-Renames Windows devices to a standard naming convention, delivered via a single `iwr | iex` command from GitHub.
+Renames Windows devices to a standard naming convention, delivered via a single `irm | iex` command from GitHub.
 
 ---
 
@@ -60,7 +60,7 @@ Hostname-rename/
 
 ---
 
-## First-Time Setup
+## First-Time Setup *some times*
 
 ### 1. Set your repo URL
 

@@ -7,6 +7,11 @@ function Select-NamingMode {
     .SYNOPSIS
         Determines whether to derive context from the network gateway or a folder name.
         Explicit switches take priority. Interactive mode presents a 15-second timed prompt.
+
+    .NOTES
+        The timed prompt uses [Console]::KeyAvailable polling so it works correctly
+        in a console session. Start-Job { Read-Host } cannot receive console input
+        and must not be used here.
     #>
     param (
         [switch]$Folder,
@@ -23,20 +28,26 @@ function Select-NamingMode {
     Write-Host "  1. Gateway  (default)"
     Write-Host "  2. Folder   (reads from Desktop subfolder)"
     Write-Host ""
+    Write-Host "Press 1 or 2 -- defaulting to Gateway in 15 seconds..."
 
-    $job = Start-Job -ScriptBlock { Read-Host "Choice (15s timeout)" }
+    $deadline = [DateTime]::Now.AddSeconds(15)
+    $keyChar  = $null
 
-    if (Wait-Job $job -Timeout 15) {
-        $choice = Receive-Job $job
-    } else {
-        Stop-Job $job
-        Write-Host "No input received — defaulting to Gateway."
+    while ([DateTime]::Now -lt $deadline) {
+        if ([Console]::KeyAvailable) {
+            $keyChar = ([Console]::ReadKey($true)).KeyChar.ToString()
+            break
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    if (-not $keyChar) {
+        Write-Host ""
+        Write-Host "No input received -- defaulting to Gateway."
         return "Gateway"
     }
 
-    Remove-Job $job -Force
-
-    if ($choice -eq "2") { return "Folder" }
+    if ($keyChar -eq "2") { return "Folder" }
     return "Gateway"
 }
 
@@ -45,8 +56,9 @@ function Get-NamingContext {
     .SYNOPSIS
         Returns the ORG/WH/LOC context hashtable for the selected mode.
         Falls back to Gateway if Folder mode fails.
+
     .NOTES
-        Requires Get-FolderContext (network.ps1) and Get-NetworkContext (network.ps1).
+        Requires Get-FolderContext and Get-NetworkContext from network.ps1.
     #>
     param (
         [string]$Mode,
@@ -59,7 +71,7 @@ function Get-NamingContext {
         try {
             return Get-FolderContext -BasePath $FolderPath -NonInteractive:$NonInteractive
         } catch {
-            Write-Warning "Folder mode failed ($_) — falling back to Gateway."
+            Write-Warning "Folder mode failed ($_) -- falling back to Gateway."
         }
     }
 
@@ -70,8 +82,11 @@ function New-DeviceName {
     <#
     .SYNOPSIS
         Assembles the final device name from its components.
-        Format: {ORG}{WH}{LOC}-{Dept}{Type}-{Serial}  (max 15 chars)
-        If the full name exceeds 15 characters, department is dropped.
+
+    .NOTES
+        Format:  {ORG}{WH}{LOC}-{Dept}{Type}-{Serial}   (max 15 chars)
+        If the full name exceeds 15 characters, the department segment is dropped:
+                 {ORG}{WH}{LOC}-{Type}-{Serial}
         Throws if even the shortened form exceeds 15 characters.
     #>
     param (
@@ -88,7 +103,7 @@ function New-DeviceName {
 
     if ($full.Length -le 15)      { return $full }
     if ($shortened.Length -le 15) {
-        Write-Warning "Full name '$full' exceeded 15 chars — department omitted."
+        Write-Warning "Full name '$full' exceeded 15 chars -- department omitted: '$shortened'"
         return $shortened
     }
 

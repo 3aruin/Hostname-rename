@@ -20,12 +20,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # -- Config -------------------------------------------------------------------
-# IMPORTANT: Pin to a specific commit SHA -- never point at 'main'.
-# After every push:
-#   1. Run .\tools\Get-Hashes.ps1 and paste the output into $MANIFEST below.
-#   2. Commit all changes.
-#   3. Copy the new commit SHA and update both $COMMIT_SHA here and your
-#      deployment/MDM URL.
+# For production/MDM: replace REPLACE_WITH_COMMIT_SHA with a real commit SHA
+# and fill in $MANIFEST hashes by running .\tools\Get-Hashes.ps1.
+# See README.md -> Deployment Workflow for the full step-by-step.
 
 $REPO_BASE  = "https://raw.githubusercontent.com/3aruin/Hostname-rename"
 $COMMIT_SHA = "REPLACE_WITH_COMMIT_SHA"
@@ -42,10 +39,18 @@ $MANIFEST = @{
 }
 # -----------------------------------------------------------------------------
 
+# If $COMMIT_SHA is still a placeholder, fall back to 'main' with a warning.
+# Pin to a real SHA for any production or MDM deployment.
+$ref = $COMMIT_SHA
+if ($ref -eq "REPLACE_WITH_COMMIT_SHA") {
+    Write-Warning "COMMIT_SHA is not set -- fetching modules from 'main'. Pin to a real commit SHA for production/MDM use."
+    $ref = "main"
+}
+
 # Fetch, verify, and dot-source each module in dependency order
 foreach ($FileName in $MODULES) {
-    $url = "$REPO_BASE/$COMMIT_SHA/$FileName"
-    Write-Verbose "Fetching $FileName..."
+    $url = "$REPO_BASE/$ref/$FileName"
+    Write-Verbose "Fetching $FileName from $ref..."
 
     try {
         $content = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
@@ -53,15 +58,15 @@ foreach ($FileName in $MODULES) {
         throw "Failed to fetch $FileName from $url`n$_"
     }
 
-    # Integrity check -- skip if manifest entry is still a placeholder
+    # Integrity check -- skipped when manifest entry is still a placeholder
     $expected = $MANIFEST[$FileName]
     if ($expected -and $expected -ne "REPLACE_WITH_HASH") {
-        $bytes  = [System.Text.Encoding]::UTF8.GetBytes($content)
-        $hash   = [System.BitConverter]::ToString(
-                      [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
-                  ) -replace '-'
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($content)
+        $hash  = [System.BitConverter]::ToString(
+                     [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+                 ) -replace '-'
         if ($hash -ne $expected) {
-            throw "Hash mismatch for $FileName -- expected $expected, got $hash"
+            throw "Hash mismatch for $FileName -- expected $expected, got $hash. Re-run .\tools\Get-Hashes.ps1 and update the manifest."
         }
         Write-Verbose "$FileName hash OK."
     }

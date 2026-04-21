@@ -1,5 +1,5 @@
 # rename.ps1
-# Orchestrator — calls functions from network.ps1, device.ps1, and naming.ps1
+# Orchestrator -- calls functions from network.ps1, device.ps1, and naming.ps1
 # in the correct order to produce and apply a device name.
 
 function Rename-DeviceSmart {
@@ -8,67 +8,68 @@ function Rename-DeviceSmart {
         Renames this computer according to the standard naming convention.
 
     .PARAMETER Folder
-        Force Folder naming mode (reads from Desktop subdirectories).
+        Use User naming mode: derives location from gateway and name from a
+        chosen C:\Users profile folder. Produces {WH}{LOC}-{Name}.
 
     .PARAMETER Gateway
-        Force Gateway naming mode (resolves from default gateway IP).
-
-    .PARAMETER FolderPath
-        Custom path to use in Folder mode. Defaults to the current user's Desktop.
-
-    .PARAMETER Username
-        Partial username to match when resolving the profile path in Folder mode.
+        Use Gateway naming mode: derives location, dept, type, and serial from
+        the network gateway. Produces {ORG}{WH}{LOC}-{DEPT}{TYPE}-{SERIAL}.
 
     .PARAMETER NonInteractive
-        Suppresses all prompts. Uses: Gateway mode, WS department, auto-detected
-        device type, and renames without confirmation.
+        Suppresses all prompts. Defaults to Gateway mode. In User mode, picks
+        the most recently active profile automatically.
 
     .EXAMPLE
-        # Interactive (prompts for department, device type, naming mode)
+        # Interactive -- prompts for mode, then guides through the rest
         Rename-DeviceSmart
 
     .EXAMPLE
-        # Headless / MDM deployment
+        # Force User naming mode interactively
+        Rename-DeviceSmart -Folder
+
+    .EXAMPLE
+        # Headless / MDM deployment (Gateway mode)
         Rename-DeviceSmart -NonInteractive -Gateway
     #>
     [CmdletBinding()]
     param (
         [switch]$Folder,
         [switch]$Gateway,
-        [string]$FolderPath  = "",
-        [string]$Username    = "",
         [switch]$NonInteractive
     )
 
-    # Resolve network context early — needed regardless of naming mode
+    # Always resolve gateway first -- provides location for both modes
     $gatewayIP = Get-DefaultGateway
+    $ctx       = Get-NetworkContext -Gateway $gatewayIP
 
-    # Resolve folder path if Folder mode is requested but no path was supplied
-    if ($Folder -and -not $FolderPath) {
-        $userPath   = Get-UserProfilePath -Username $Username
-        $FolderPath = Join-Path $userPath "Desktop"
+    $mode = Select-NamingMode -Folder:$Folder -Gateway:$Gateway -NonInteractive:$NonInteractive
+
+    if ($mode -eq "User") {
+        # ── User mode: {WH}{LOC}-{Name} ──────────────────────────────────────
+        $userName = Get-UserName -NonInteractive:$NonInteractive
+        $newName  = New-UserDeviceName -WH $ctx.WH -LOC $ctx.LOC -Name $userName
+
+    } else {
+        # ── Gateway mode: {ORG}{WH}{LOC}-{DEPT}{TYPE}-{SERIAL} ───────────────
+        $dept   = Get-Department -NonInteractive:$NonInteractive
+        $type   = Get-DeviceType -NonInteractive:$NonInteractive
+        $serial = Get-SerialLast4
+
+        $newName = New-DeviceName `
+            -ORG        $ctx.ORG `
+            -WH         $ctx.WH `
+            -LOC        $ctx.LOC `
+            -Department $dept `
+            -Type       $type `
+            -Serial     $serial
     }
-
-    $mode   = Select-NamingMode    -Folder:$Folder -Gateway:$Gateway -NonInteractive:$NonInteractive
-    $ctx    = Get-NamingContext    -Mode $mode -Gateway $gatewayIP -FolderPath $FolderPath -NonInteractive:$NonInteractive
-    $dept   = Get-Department       -NonInteractive:$NonInteractive
-    $type   = Get-DeviceType       -NonInteractive:$NonInteractive
-    $serial = Get-SerialLast4
-
-    $newName = New-DeviceName `
-        -ORG        $ctx.ORG `
-        -WH         $ctx.WH `
-        -LOC        $ctx.LOC `
-        -Department $dept `
-        -Type       $type `
-        -Serial     $serial
 
     Write-Host ""
     Write-Host "Proposed name : $newName"
     Write-Host ""
 
     if ($NonInteractive) {
-        Write-Host "NonInteractive mode — renaming and restarting."
+        Write-Host "NonInteractive mode -- renaming and restarting."
         Rename-Computer -NewName $newName -Force -Restart
         return
     }

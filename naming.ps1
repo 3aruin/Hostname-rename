@@ -1,17 +1,19 @@
 # naming.ps1
-# Handles: naming mode selection, context resolution, device name construction
-# Depends on: network.ps1 (Get-FolderContext, Get-NetworkContext)
+# Handles: naming mode selection and device name construction
+# Depends on: network.ps1 (Get-NetworkContext)
 
 function Select-NamingMode {
     <#
     .SYNOPSIS
-        Determines whether to derive context from the network gateway or a folder name.
-        Explicit switches take priority. Interactive mode presents a 15-second timed prompt.
+        Determines whether to name the device by gateway (dept/type/serial) or
+        by user profile (location + employee name).
+        Explicit switches take priority. Interactive mode presents a 15-second
+        timed prompt.
 
     .NOTES
-        The timed prompt uses [Console]::KeyAvailable polling so it works correctly
-        in a console session. Start-Job { Read-Host } cannot receive console input
-        and must not be used here.
+        The timed prompt uses [Console]::KeyAvailable polling so it works
+        correctly in a console session. Start-Job { Read-Host } cannot receive
+        console input and must not be used here.
     #>
     param (
         [switch]$Folder,
@@ -19,14 +21,14 @@ function Select-NamingMode {
         [switch]$NonInteractive
     )
 
-    if ($Folder)         { return "Folder" }
+    if ($Folder)         { return "User" }
     if ($Gateway)        { return "Gateway" }
     if ($NonInteractive) { return "Gateway" }
 
     Write-Host ""
-    Write-Host "Select naming source:"
-    Write-Host "  1. Gateway  (default)"
-    Write-Host "  2. Folder   (reads from Desktop subfolder)"
+    Write-Host "Select naming mode:"
+    Write-Host "  1. Gateway  (standard: dept / type / serial)"
+    Write-Host "  2. User     (location + employee name)"
     Write-Host ""
     Write-Host "Press 1 or 2 -- defaulting to Gateway in 15 seconds..."
 
@@ -47,41 +49,14 @@ function Select-NamingMode {
         return "Gateway"
     }
 
-    if ($keyChar -eq "2") { return "Folder" }
+    if ($keyChar -eq "2") { return "User" }
     return "Gateway"
-}
-
-function Get-NamingContext {
-    <#
-    .SYNOPSIS
-        Returns the ORG/WH/LOC context hashtable for the selected mode.
-        Falls back to Gateway if Folder mode fails.
-
-    .NOTES
-        Requires Get-FolderContext and Get-NetworkContext from network.ps1.
-    #>
-    param (
-        [string]$Mode,
-        [string]$Gateway,
-        [string]$FolderPath,
-        [switch]$NonInteractive
-    )
-
-    if ($Mode -eq "Folder") {
-        try {
-            return Get-FolderContext -BasePath $FolderPath -NonInteractive:$NonInteractive
-        } catch {
-            Write-Warning "Folder mode failed ($_) -- falling back to Gateway."
-        }
-    }
-
-    return Get-NetworkContext -Gateway $Gateway
 }
 
 function New-DeviceName {
     <#
     .SYNOPSIS
-        Assembles the final device name from its components.
+        Assembles the Gateway-mode device name from its components.
 
     .NOTES
         Format:  {ORG}{WH}{LOC}-{Dept}{Type}-{Serial}   (max 15 chars)
@@ -108,4 +83,33 @@ function New-DeviceName {
     }
 
     throw "Device name '$shortened' still exceeds 15 characters. Review ORG/WH/LOC/Serial values."
+}
+
+function New-UserDeviceName {
+    <#
+    .SYNOPSIS
+        Assembles the User-mode device name from location and employee name.
+
+    .NOTES
+        Format:  {WH}{LOC}-{Name}   (max 15 chars)
+        Example: 01R-JaneDoe
+        Name is already truncated to 11 chars by Get-UserName, but a safety
+        check is applied here as well.
+    #>
+    param (
+        [string]$WH,
+        [string]$LOC,
+        [string]$Name
+    )
+
+    $prefix = "$WH$LOC-"
+    $result = "$prefix$Name"
+
+    if ($result.Length -le 15) { return $result }
+
+    # Safety truncation (Get-UserName should have already handled this)
+    $maxName  = 15 - $prefix.Length
+    $result   = "$prefix$($Name.Substring(0, $maxName))"
+    Write-Warning "Name truncated to fit 15-char limit: '$result'"
+    return $result
 }

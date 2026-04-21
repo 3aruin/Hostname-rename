@@ -1,5 +1,6 @@
 # device.ps1
-# Handles: department selection, device type detection, serial number retrieval
+# Handles: department selection, device type detection, serial number retrieval,
+#          and user profile name resolution (for User naming mode)
 
 # -- Valid Values -------------------------------------------------------------
 # Extend these arrays as new departments or device classes are introduced.
@@ -85,4 +86,78 @@ function Get-SerialLast4 {
     }
 
     return $clean.PadLeft(4, '0')
+}
+
+function Get-UserName {
+    <#
+    .SYNOPSIS
+        Presents a numbered list of C:\Users profile folders and returns the
+        chosen name cleaned for use in a device name.
+
+        In NonInteractive mode, the most recently active profile is selected
+        automatically (sorted by folder LastWriteTime descending).
+
+    .NOTES
+        Name cleaning steps applied to the selected folder name:
+          1. Strip from the first @ or _ onward
+             (handles Entra UPN suffixes: jane.doe@contoso.com, JaneDoe_contoso.com)
+          2. Remove dots
+             (handles Entra UPN prefix style: jane.doe -> janedoe)
+          3. Remove any remaining non-alphanumeric characters
+          4. Truncate to 11 characters
+             (maximum that fits in {WH}{LOC}-{NAME} within the 15-char limit)
+    #>
+    param (
+        [switch]$NonInteractive
+    )
+
+    # Well-known Windows system profile folders that are never valid user names
+    $systemFolders = @(
+        "Public", "Default", "DefaultAppPool", "defaultuser0",
+        "Administrator", "Guest", "WDAGUtilityAccount"
+    )
+
+    $profiles = Get-ChildItem -Path "C:\Users" -Directory |
+        Where-Object  { $_.Name -notin $systemFolders } |
+        Sort-Object   LastWriteTime -Descending
+
+    if (-not $profiles) {
+        throw "No user profile folders found under C:\Users."
+    }
+
+    if ($NonInteractive) {
+        # Most recently active profile
+        $selected = $profiles[0].Name
+        Write-Host "Auto-selected profile: $selected"
+    } else {
+        Write-Host ""
+        Write-Host "Select user:"
+        for ($i = 0; $i -lt $profiles.Count; $i++) {
+            "  {0}. {1}" -f ($i + 1), $profiles[$i].Name
+        }
+        Write-Host ""
+
+        do {
+            $choice = Read-Host "User number"
+        } until ($choice -as [int] -and [int]$choice -ge 1 -and [int]$choice -le $profiles.Count)
+
+        $selected = $profiles[[int]$choice - 1].Name
+    }
+
+    # Step 1 -- strip domain suffix at @ or _
+    $clean = $selected
+    foreach ($sep in '@', '_') {
+        $idx = $clean.IndexOf($sep)
+        if ($idx -gt 0) { $clean = $clean.Substring(0, $idx) }
+    }
+
+    # Step 2 & 3 -- remove dots and any remaining non-alphanumeric characters
+    $clean = ($clean -replace '[^a-zA-Z0-9]', '')
+
+    if ($clean.Length -eq 0) {
+        throw "Profile name '$selected' produced an empty string after cleaning. Rename the profile folder or use Gateway mode."
+    }
+
+    # Step 4 -- truncate to 11 chars
+    return $clean.Substring(0, [Math]::Min(11, $clean.Length))
 }

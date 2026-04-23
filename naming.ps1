@@ -30,9 +30,9 @@ function Select-NamingMode {
     Write-Host "  1. Gateway  (standard: dept / type / serial)"
     Write-Host "  2. User     (location + employee name)"
     Write-Host ""
-    Write-Host "Press 1 or 2 -- defaulting to Gateway in 15 seconds..."
+    Write-Host "Press 1 or 2 -- defaulting to Gateway in 8 seconds..."
 
-    $deadline = [DateTime]::Now.AddSeconds(15)
+    $deadline = [DateTime]::Now.AddSeconds(8)
     $keyChar  = $null
 
     while ([DateTime]::Now -lt $deadline) {

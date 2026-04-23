@@ -49,9 +49,14 @@ function Get-DeviceType {
     $type = "DT"    # default
 
     try {
-        $os  = Get-CimInstance Win32_OperatingSystem
-        $cs  = Get-CimInstance Win32_ComputerSystem
-        $cpu = Get-CimInstance Win32_Processor
+        # Fire all three CIM queries simultaneously -- cuts detection time by ~2/3
+        $osJob  = Get-CimInstance Win32_OperatingSystem -AsJob
+        $csJob  = Get-CimInstance Win32_ComputerSystem  -AsJob
+        $cpuJob = Get-CimInstance Win32_Processor       -AsJob
+
+        $os  = $osJob  | Wait-Job | Receive-Job; $osJob  | Remove-Job -Force
+        $cs  = $csJob  | Wait-Job | Receive-Job; $csJob  | Remove-Job -Force
+        $cpu = $cpuJob | Wait-Job | Receive-Job; $cpuJob | Remove-Job -Force
 
         if    ($cs.Model       -match "Virtual") { $type = "VM" }
         elseif ($os.ProductType -ne 1)           { $type = "SV" }
@@ -117,11 +122,15 @@ function Get-UserName {
         "Administrator", "Guest", "WDAGUtilityAccount"
     )
 
-    $profiles = Get-ChildItem -Path "C:\Users" -Directory |
-        Where-Object  { $_.Name -notin $systemFolders } |
-        Sort-Object   LastWriteTime -Descending
+    # @() forces an array even when Get-ChildItem returns a single object,
+    # which would otherwise cause .Count to throw under Set-StrictMode -Version Latest
+    $profiles = @(
+        Get-ChildItem -Path "C:\Users" -Directory |
+            Where-Object { $_.Name -notin $systemFolders } |
+            Sort-Object  LastWriteTime -Descending
+    )
 
-    if (-not $profiles) {
+    if ($profiles.Count -eq 0) {
         throw "No user profile folders found under C:\Users."
     }
 

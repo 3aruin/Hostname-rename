@@ -133,7 +133,7 @@ function Get-UserName {
         Write-Host ""
         Write-Host "Select user:"
         for ($i = 0; $i -lt $profiles.Count; $i++) {
-            "  {0}. {1}" -f ($i + 1), $profiles[$i].Name
+            Write-Host ("  {0}. {1}" -f ($i + 1), $profiles[$i].Name)
         }
         Write-Host ""
 

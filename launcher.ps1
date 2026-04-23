@@ -129,15 +129,26 @@ if (Invoke-SelfElevation -FallbackUrl $launcherUrl -ScriptParams $PSBoundParamet
     exit  # Non-elevated session exits; the new elevated session carries on
 }
 
-# Fetch, verify, and dot-source each module in dependency order
+# Kick off all module fetches simultaneously
+$jobs = [ordered]@{}
 foreach ($FileName in $MODULES) {
     $url = "$REPO_BASE/$ref/$FileName"
-    Write-Verbose "Fetching $FileName from $ref..."
+    Write-Verbose "Queuing fetch: $FileName"
+    $jobs[$FileName] = Start-Job -ScriptBlock {
+        param($u)
+        (Invoke-WebRequest -Uri $u -UseBasicParsing).Content
+    } -ArgumentList $url
+}
 
+# Collect in dependency order, verify hashes, then dot-source
+foreach ($FileName in $MODULES) {
+    Write-Verbose "Loading $FileName..."
     try {
-        $content = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
+        $content = Receive-Job $jobs[$FileName] -Wait -ErrorAction Stop
     } catch {
-        throw "Failed to fetch $FileName from $url`n$_"
+        throw "Failed to fetch $FileName from $REPO_BASE/$ref/$FileName`n$_"
+    } finally {
+        Remove-Job $jobs[$FileName] -Force -ErrorAction SilentlyContinue
     }
 
     # Integrity check -- skipped when manifest entry is still a placeholder

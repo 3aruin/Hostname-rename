@@ -1,0 +1,175 @@
+# .github/workflows/ci.yml
+#
+# CI pipeline for Hostname-Rename.
+# Runs on every push and pull request.
+#
+# Jobs:
+#   lint     -- PSScriptAnalyzer on all .ps1 files (PS 5.1 + 7.x)
+#   test     -- Pester unit tests
+#   manifest -- Verify $MANIFEST hashes in launcher.ps1 match the module files
+#   placeholder -- Fail if REPLACE_WITH_COMMIT_SHA was accidentally committed (ADR-002)
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+
+  # ── Lint ────────────────────────────────────────────────────────────────────
+  lint:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        ps-version: ["5.1", "latest"]   # 5.1 = Windows PowerShell, latest = PS 7.x
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $files  = Get-ChildItem -Path . -Filter "*.ps1" -Recurse
+          $issues = $files | ForEach-Object {
+              Invoke-ScriptAnalyzer -Path $_.FullName -Severity Error,Warning
+          }
+
+          if ($issues) {
+              $issues | Format-Table -AutoSize
+              Write-Error "PSScriptAnalyzer found $($issues.Count) issue(s). See table above."
+              exit 1
+          }
+          Write-Host "PSScriptAnalyzer: no issues found."
+
+  # ── Pester unit tests ───────────────────────────────────────────────────────
+  test:
+    name: Pester Tests
+    runs-on: windows-latest
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -MinimumVersion 5.0 -Force -Scope CurrentUser
+
+      - name: Run Pester
+        run: |
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path       = "./tests"
+          $cfg.Output.Verbosity = "Detailed"
+          $cfg.TestResult.Enabled    = $true
+          $cfg.TestResult.OutputPath = "test-results.xml"
+          $cfg.TestResult.OutputFormat = "NUnitXml"
+
+          $result = Invoke-Pester -Configuration $cfg -PassThru
+
+          if ($result.FailedCount -gt 0) {
+              Write-Error "$($result.FailedCount) Pester test(s) failed."
+              exit 1
+          }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-results
+          path: test-results.xml
+
+  # ── Manifest hash validation ─────────────────────────────────────────────────
+  manifest:
+    name: Manifest Hash Check
+    runs-on: windows-latest
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify $MANIFEST hashes match module files
+        run: |
+          # Parse the $MANIFEST block from launcher.ps1
+          $launcherContent = Get-Content ./launcher.ps1 -Raw
+
+          # Extract hash entries: "filename.ps1" = "hexhash"
+          $manifestEntries = [regex]::Matches(
+              $launcherContent,
+              '"(?<file>[^"]+\.ps1)"\s*=\s*"(?<hash>[a-f0-9]{64})"'
+          )
+
+          if ($manifestEntries.Count -eq 0) {
+              Write-Warning "No hash entries found in `$MANIFEST — skipping check (placeholder values present)."
+              exit 0
+          }
+
+          $failed = $false
+
+          foreach ($entry in $manifestEntries) {
+              $fileName     = $entry.Groups["file"].Value
+              $expectedHash = $entry.Groups["hash"].Value.ToLower()
+
+              $filePath = Join-Path (Get-Location) $fileName
+              if (-not (Test-Path $filePath)) {
+                  Write-Error "  MISSING: $fileName (listed in manifest but not found)"
+                  $failed = $true
+                  continue
+              }
+
+              $content  = Get-Content $filePath -Raw -Encoding UTF8
+              $bytes    = [System.Text.Encoding]::UTF8.GetBytes($content)
+              $actualHash = ([BitConverter]::ToString(
+                  [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+              ) -replace '-').ToLower()
+
+              if ($actualHash -ne $expectedHash) {
+                  Write-Error "  HASH MISMATCH: $fileName"
+                  Write-Error "    Expected : $expectedHash"
+                  Write-Error "    Actual   : $actualHash"
+                  Write-Error "    → Run .\tools\Get-Hashes.ps1 and update `$MANIFEST in launcher.ps1"
+                  $failed = $true
+              } else {
+                  Write-Host "  OK: $fileName"
+              }
+          }
+
+          if ($failed) { exit 1 }
+          Write-Host "All manifest hashes verified."
+
+  # ── Placeholder commit guard ─────────────────────────────────────────────────
+  placeholder:
+    name: Placeholder Check (ADR-002)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if REPLACE_WITH_COMMIT_SHA is present in launcher.ps1
+        run: |
+          if grep -q "REPLACE_WITH_COMMIT_SHA" launcher.ps1; then
+            echo "::error file=launcher.ps1::COMMIT_SHA placeholder not replaced."
+            echo ""
+            echo "launcher.ps1 still contains REPLACE_WITH_COMMIT_SHA."
+            echo "This placeholder must be replaced with a real 40-character commit SHA"
+            echo "before merging. See README.md -> Deployment Workflow."
+            exit 1
+          fi
+          echo "No placeholder found — launcher.ps1 is pinned to a real SHA."
+        # Allow the check to be skipped on the main branch when intentionally
+        # keeping the template in a default state (e.g. the canonical repo HEAD).
+        # Remove this 'continue-on-error' if you want hard enforcement everywhere.
+        continue-on-error: ${{ github.ref == 'refs/heads/main' }}

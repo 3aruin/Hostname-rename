@@ -9,15 +9,47 @@
 # CI runs this automatically on every push and PR via .github/workflows/ci.yml.
 
 BeforeAll {
-    # Dot-source modules directly -- no need for launcher or network access.
-    # Use Join-Path rather than "$PSScriptRoot/../module.ps1": on Windows the
-    # dot-source operator does not normalise mixed-slash relative paths
-    # (\tests/../naming.ps1 fails command-lookup with CommandNotFoundException),
-    # whereas Join-Path produces the platform-correct separator either way.
+    # Resolve and dot-source the three modules. We try the canonical layout
+    # (modules at repo root) first, fall back to a recursive search if they're
+    # not there, and on outright miss surface the actual .ps1 file inventory
+    # of the repo in the error message -- a CommandNotFoundException with no
+    # context is too thin to debug in CI logs.
     $repoRoot = Split-Path -Parent $PSScriptRoot
-    . (Join-Path $repoRoot 'naming.ps1')
-    . (Join-Path $repoRoot 'network.ps1')
-    . (Join-Path $repoRoot 'device.ps1')
+
+    foreach ($mod in 'naming.ps1', 'network.ps1', 'device.ps1') {
+        # 1. Canonical layout -- modules at repo root.
+        $atRoot = Join-Path $repoRoot $mod
+        if (Test-Path -LiteralPath $atRoot) {
+            . $atRoot
+            continue
+        }
+
+        # 2. Fallback -- search anywhere under the repo, excluding the tests
+        #    directory so we don't accidentally pick up a sibling file.
+        $found = Get-ChildItem -Path $repoRoot -Filter $mod -Recurse -File `
+                                -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '[\\/]tests[\\/]' } |
+                 Select-Object -First 1
+        if ($found) {
+            . $found.FullName
+            continue
+        }
+
+        # 3. Genuinely missing -- list every .ps1 in the repo so we can see
+        #    where things actually live.
+        $available = @(
+            Get-ChildItem -Path $repoRoot -Filter '*.ps1' -Recurse -File `
+                          -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.FullName }
+        )
+        throw (
+            "Required module '$mod' not found.`n" +
+            "  Tried canonical path : $atRoot`n" +
+            "  Repo root            : $repoRoot`n" +
+            "  Available .ps1 files :`n    " +
+            ($available -join "`n    ")
+        )
+    }
 }
 
 # -----------------------------------------------------------------------------

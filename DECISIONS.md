@@ -281,6 +281,66 @@ $jobs[$FileName] = Start-Job -ScriptBlock {
 
 ---
 
+### BUG-008 · Pester v5 test container failed before any test ran
+
+**Severity:** Medium — blocks the `test` CI job  
+**Status:** ✅ Resolved in v3 (2026-04-30)  
+**Location:** `tests/Hostname-Rename.Tests.ps1` (`Describe "Get-SerialLast4"`)
+
+**Was:** First end-to-end run of the Pester job — after BUG-006/BUG-007 unblocked the lint stage and the `Run.PassThru` config fix unblocked `Invoke-Pester` itself — produced:
+
+```
+Pester v5.7.1
+Starting discovery in 1 files.
+Discovery found 38 tests in 234ms.
+Running tests.
+[-] tests\Hostname-Rename.Tests.ps1 failed with:
+Message
+Tests completed in 723ms
+Tests Passed: 0, Failed: 38, Container failed: 1
+```
+
+All 38 tests reported failed with no individual error messages — the diagnostic signature of a container-level failure during Run phase. Two interacting defects in the `Get-SerialLast4` Describe block:
+
+**1. Discovery-phase variable referenced at Run phase.** In the second Context, the helper scriptblock was defined at Context body level:
+
+```powershell
+Context "Serial shorter than 4 chars" {
+    $fn = { param($s) ... }                # <- runs during Discovery
+    It "3 chars -> left-pads to 4" {
+        & $fn "ABC" | Should -Be "0ABC"    # <- runs during Run; $fn is $null
+    }
+}
+```
+
+Per the Pester v5 breaking-changes documentation:
+> *Variables defined during Discovery, are not available in BeforeAll/-Each, AfterAll/-Each and It.*
+
+`$fn` was assigned at Discovery, then `It` blocks invoked `& $null` at Run time, which throws.
+
+**2. Malformed `InModuleScope` call.** The first `It` block contained:
+
+```powershell
+InModuleScope -Scriptblock {
+    # Mock CIM since we only want to test the logic
+}
+```
+
+— missing the required `-ModuleName` parameter, with an empty (commented-out) body. Leftover scaffolding for a mock that was never written. Throws at Run time regardless of the `$fn` issue.
+
+**Resolution:**
+- Hoisted the helper scriptblock into a Describe-level `BeforeAll` assigned to `$script:fn` — the documented Pester v5 cross-block pattern, same approach used for `$script:clean` in BUG-006c.
+- Deleted the malformed `InModuleScope` block.
+- Deduplicated the three inline copies of the helper that had been in the first Context's `It` blocks (assigned to local `$fn` each time, which worked but was repetitive). All seven `It` blocks across both Contexts now call the single `$script:fn`.
+
+**Test count unchanged:** 38 tests before, 38 tests after. No assertion logic changed — the helper's body is byte-identical to the previous inline copies. The fix only changes *where* the helper lives, so it's accessible at Run time.
+
+**Why the original error was missing.** Pester's `Detailed` verbosity renders container-level errors as `failed with:\nMessage\n` — the exception object is captured in the result, but the `.Message` property's contents aren't formatted to console at this verbosity for container failures specifically. Diagnosing required reading the test source to spot the Discovery/Run scope boundary. Bumping verbosity to `Diagnostic` in `ci.yml` would surface the underlying exception in future runs, at the cost of much noisier successful runs (every mock setup, every internal step). Left at `Detailed` since the root cause is now understood and documented; revisit if a similar opaque container failure recurs.
+
+**Why this surfaced now:** v3 is the first version with a CI test pipeline. v2 had no tests in CI. The defects existed in the test file as written but were never exercised until the lint and `Invoke-Pester`-call issues were resolved.
+
+---
+
 ## Open Questions for v3
 
 ### OQ-001 · Should logging be implemented?
@@ -358,6 +418,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 | — | Fix BUG-005: null/empty gateway misleading error (found in pre-launch audit) | Bug | Low | ✅ Done — `network.ps1` |
 | — | Fix BUG-006: PSScriptAnalyzer lint failures on first CI run (Write-Host, BOM, unused var) | Bug / Infra | Medium | ✅ Done — `PSScriptAnalyzerSettings.psd1`, `ci.yml`, plus ASCII fixes to `network.ps1`, `rename.ps1`, test file (ADR-007) |
 | — | Fix BUG-007: PSUseUsingScopeModifierInNewRunspaces false positive in launcher fetch loop | Bug | Medium | ✅ Done — `launcher.ps1` switched to `$using:url` |
+| — | Fix BUG-008: Pester v5 container failure from Discovery-phase `$fn` and malformed `InModuleScope` | Bug | Medium | ✅ Done — `tests/Hostname-Rename.Tests.ps1` restructured to use `$script:fn` BeforeAll |
 | — | Bump GitHub Actions to Node 24 versions ahead of Node 20 deprecation (2026-06-02 / 2026-09-16) | Infra | Medium | ✅ Done — `actions/checkout@v5`, `actions/upload-artifact@v6` in `ci.yml` |
 | 5 | Add `SupportsShouldProcess` / `-WhatIf` to `Rename-DeviceSmart` (OQ-002) | Enhancement | Medium | ⬜ Open — deferred to v3.1 |
 | 7 | Add optional logging scaffold (OQ-001) | Enhancement | Low | ⬜ Open — deferred to v3.1 |
@@ -405,6 +466,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - Run locally: `Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed`
 - ✅ Section-divider chars (`─`), inline arrows (`→`), and em dashes (`—`) replaced with ASCII equivalents (BUG-006b)
 - ✅ `$clean` scriptblock in `Get-UserName name cleaning` Describe block promoted to `$script:clean` so PSScriptAnalyzer recognises the cross-block use; assignment plus all eight call sites updated (BUG-006c)
+- ✅ `Get-SerialLast4` Describe restructured (BUG-008): helper scriptblock moved from Context body level (Discovery phase, invisible at Run time in Pester v5) into a Describe-level `BeforeAll` using `$script:fn`. Empty `InModuleScope -Scriptblock { }` removed. Three duplicated inline helper copies in the first Context deduplicated against the new `BeforeAll`.
 
 ### `.github/workflows/ci.yml` *(new in v3)*
 - Four jobs: `lint`, `test`, `manifest`, `placeholder` — see OQ-005 for detail

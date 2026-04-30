@@ -84,6 +84,30 @@ Date updated from 2026-04-28 to 2026-04-30 to reflect pre-launch audit fixes app
     Pester v5 pattern for cross-block state); the assignment and all eight
     call sites updated.
 
+- **BUG-008** · `tests/Hostname-Rename.Tests.ps1` — first run of the Pester v5
+  test job (after BUG-006/BUG-007 unblocked the lint stage and the
+  `Run.PassThru` fix unblocked `Invoke-Pester`) failed the entire container:
+  Discovery found 38 tests, then all 38 reported as failed with no individual
+  error messages — the diagnostic signature of a container-level Run-phase
+  failure. Two defects in the `Get-SerialLast4` Describe:
+
+  - Helper scriptblock `$fn` was defined at Context body level, which Pester
+    v5 evaluates during the Discovery phase. Per the Pester v5
+    breaking-changes docs, variables defined during Discovery are not
+    available in `It`, `BeforeAll`, or `BeforeEach` blocks at Run time, so
+    every reference resolved to `$null` and `& $null` threw. Fixed by
+    hoisting the helper into a Describe-level `BeforeAll` assigned to
+    `$script:fn` — the same cross-block pattern used for `$script:clean` in
+    BUG-006c.
+
+  - Empty `InModuleScope -Scriptblock { }` call inside the first `It` block —
+    leftover scaffolding for a mock that was never written. Missing required
+    `-ModuleName` parameter, empty body. Removed.
+
+  While there, the helper was inlined three times across the first Context's
+  three `It` blocks; deduplicated against the new `BeforeAll`. No test count
+  or assertion change — 38 tests in, 38 tests out.
+
 - **BUG-007** · `launcher.ps1` — `PSUseUsingScopeModifierInNewRunspaces` false
   positive on the parallel-fetch loop. The original code used the standard
   `Start-Job ... -ArgumentList $url` pattern with a matching `param($u)` block

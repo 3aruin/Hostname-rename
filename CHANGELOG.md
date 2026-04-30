@@ -84,9 +84,25 @@ Date updated from 2026-04-28 to 2026-04-30 to reflect pre-launch audit fixes app
     Pester v5 pattern for cross-block state); the assignment and all eight
     call sites updated.
 
+- **BUG-007** · `launcher.ps1` — `PSUseUsingScopeModifierInNewRunspaces` false
+  positive on the parallel-fetch loop. The original code used the standard
+  `Start-Job ... -ArgumentList $url` pattern with a matching `param($u)` block
+  inside the scriptblock — `$u` *is* declared inside the scriptblock by the
+  param block, but the analyzer's static check doesn't recognise that and flags
+  both the param declaration and the usage as undeclared cross-runspace
+  references. Switched to `$using:url`, which is more idiomatic for `Start-Job`
+  in modern PowerShell, snapshots the loop variable's current value into each
+  job's runspace at `Start-Job` time (preserving per-iteration correctness),
+  and silences the warning without disabling a rule that catches genuine bugs
+  elsewhere.
+
 - **`ci.yml`** — `lint` job updated to pass
   `-Settings ./PSScriptAnalyzerSettings.psd1` to `Invoke-ScriptAnalyzer` so the
-  exclusion is honoured in CI.
+  exclusion is honoured in CI. `test` job's `Invoke-Pester` call updated to
+  set `$cfg.Run.PassThru = $true` on the configuration object instead of
+  passing `-PassThru` as a parameter — Pester v5's Simple and Advanced parameter
+  sets cannot be combined and the previous form threw "Parameter set cannot be
+  resolved" on every run.
 
 - **BUG-005** · `network.ps1` — `Get-NetworkContext` now opens with an
   `[string]::IsNullOrEmpty` guard before the map lookup. Previously, if
@@ -120,6 +136,18 @@ Date updated from 2026-04-28 to 2026-04-30 to reflect pre-launch audit fixes app
   table and marked *(planned — v3.1)*; no longer documented as implemented.
 
 ### Changed
+
+- **`.github/workflows/ci.yml`** — GitHub Actions runtime versions bumped to
+  Node.js 24 ahead of the Node 20 deprecation deadline (Node 20 forced off
+  default 2 June 2026, removed 16 September 2026):
+  - `actions/checkout` v4 → v5 (4 references — one per job: `lint`, `test`,
+    `manifest`, `placeholder`)
+  - `actions/upload-artifact` v4 → v6 (1 reference in the `test` job)
+
+  Both new versions ship with `runs.using: node24` by default and require
+  Actions Runner v2.327.1 or newer. GitHub-hosted runners (`windows-latest`,
+  `ubuntu-latest`) keep this current automatically; self-hosted runners would
+  need to be on 2.327.1+ before merging this change.
 
 - **`network.ps1`** — all six internal `10.72.x.x` gateway IPs replaced with RFC 5737
   documentation-range addresses (`192.0.2.x`, `198.51.100.x`, `203.0.113.x`). Example

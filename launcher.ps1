@@ -130,14 +130,18 @@ if (Invoke-SelfElevation -FallbackUrl $launcherUrl -ScriptParams $PSBoundParamet
 }
 
 # Kick off all module fetches simultaneously
+# $using:url snapshots the loop variable's current value into each job's
+# runspace at Start-Job time. This is more idiomatic than -ArgumentList for
+# Start-Job and avoids a PSScriptAnalyzer false positive
+# (PSUseUsingScopeModifierInNewRunspaces) that misreads param() blocks
+# inside job scriptblocks.
 $jobs = [ordered]@{}
 foreach ($FileName in $MODULES) {
     $url = "$REPO_BASE/$ref/$FileName"
     Write-Verbose "Queuing fetch: $FileName"
     $jobs[$FileName] = Start-Job -ScriptBlock {
-        param($u)
-        (Invoke-WebRequest -Uri $u -UseBasicParsing).Content
-    } -ArgumentList $url
+        (Invoke-WebRequest -Uri $using:url -UseBasicParsing).Content
+    }
 }
 
 # Collect in dependency order, verify hashes, then dot-source

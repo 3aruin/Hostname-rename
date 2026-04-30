@@ -248,6 +248,39 @@ This condition is treated as always-fatal (no interactive/NonInteractive split) 
 
 ---
 
+### BUG-007 · `PSUseUsingScopeModifierInNewRunspaces` false positive in launcher fetch loop
+
+**Severity:** Medium — blocks the `lint` CI job  
+**Status:** ✅ Resolved in v3 (2026-04-30)  
+**Location:** `launcher.ps1` (parallel module-fetch loop, lines 132-141)
+
+**Was:** The fetch loop used the standard `Start-Job ... -ArgumentList` pattern with a matching `param()` block inside the scriptblock:
+
+```powershell
+$jobs[$FileName] = Start-Job -ScriptBlock {
+    param($u)
+    (Invoke-WebRequest -Uri $u -UseBasicParsing).Content
+} -ArgumentList $url
+```
+
+`$u` *is* declared inside the scriptblock (by the `param` block) and *is* bound at `Start-Job` time (via `-ArgumentList`). The pattern is functionally correct and well-documented for PowerShell jobs. PSScriptAnalyzer's `PSUseUsingScopeModifierInNewRunspaces` rule has a known limitation: its static check doesn't recognise `param()` blocks inside scriptblocks passed to `Start-Job` / `Invoke-Command`, so it flags both the param declaration *and* every reference to the param variable as undeclared cross-runspace references.
+
+**Resolution:** Switched to the `$using:` scope modifier:
+
+```powershell
+$jobs[$FileName] = Start-Job -ScriptBlock {
+    (Invoke-WebRequest -Uri $using:url -UseBasicParsing).Content
+}
+```
+
+`$using:url` snapshots the loop variable's *current* value into each job's runspace at `Start-Job` time, which preserves the per-iteration correctness of the original pattern (each job fetches the URL for its own iteration, not a shared late-bound reference). Functionally equivalent to the original.
+
+**Alternative considered:** suppress the rule via `[Diagnostics.CodeAnalysis.SuppressMessageAttribute]` on the function or add it to `PSScriptAnalyzerSettings.psd1`. Rejected — `PSUseUsingScopeModifierInNewRunspaces` catches genuine bugs (silently failing cross-runspace variable references) and there's no reason to disable it project-wide for a single-line idiomatic fix that resolves the false positive cleanly. The fix is the *more* idiomatic form for `Start-Job` in modern PowerShell anyway.
+
+**Note for the manifest:** `launcher.ps1` is not in `$MANIFEST` (it cannot hash itself), so this change doesn't require regenerating module hashes. It does require a new commit SHA in deployment URLs as usual.
+
+---
+
 ## Open Questions for v3
 
 ### OQ-001 · Should logging be implemented?
@@ -324,6 +357,8 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 | 9 | Add `CHANGELOG.md` | Open-source hygiene | Low | ✅ Done — `CHANGELOG.md` |
 | — | Fix BUG-005: null/empty gateway misleading error (found in pre-launch audit) | Bug | Low | ✅ Done — `network.ps1` |
 | — | Fix BUG-006: PSScriptAnalyzer lint failures on first CI run (Write-Host, BOM, unused var) | Bug / Infra | Medium | ✅ Done — `PSScriptAnalyzerSettings.psd1`, `ci.yml`, plus ASCII fixes to `network.ps1`, `rename.ps1`, test file (ADR-007) |
+| — | Fix BUG-007: PSUseUsingScopeModifierInNewRunspaces false positive in launcher fetch loop | Bug | Medium | ✅ Done — `launcher.ps1` switched to `$using:url` |
+| — | Bump GitHub Actions to Node 24 versions ahead of Node 20 deprecation (2026-06-02 / 2026-09-16) | Infra | Medium | ✅ Done — `actions/checkout@v5`, `actions/upload-artifact@v6` in `ci.yml` |
 | 5 | Add `SupportsShouldProcess` / `-WhatIf` to `Rename-DeviceSmart` (OQ-002) | Enhancement | Medium | ⬜ Open — deferred to v3.1 |
 | 7 | Add optional logging scaffold (OQ-001) | Enhancement | Low | ⬜ Open — deferred to v3.1 |
 
@@ -335,6 +370,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - Core model is sound; carry forward as-is structurally
 - Param block needs `-FolderPath` and `-Username` once BUG-001 is resolved in v3.1
 - `$REPO_BASE` hardcodes the author's GitHub path — fine for the canonical repo, documented for forks in `CONTRIBUTING.md`
+- ✅ Parallel fetch loop switched from `param/-ArgumentList` to `$using:url` (BUG-007). Functionally equivalent; resolves a PSScriptAnalyzer false positive without disabling the rule.
 
 ### `network.ps1`
 - ✅ All six `10.72.x.x` entries replaced with RFC 5737 documentation IPs (ADR-004)
@@ -375,6 +411,8 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - `lint` runs a PS 5.1 / 7.x matrix via `windows-latest`
 - `placeholder` runs on `ubuntu-latest` (faster, no PS needed for a grep check)
 - ✅ `lint` job updated to pass `-Settings ./PSScriptAnalyzerSettings.psd1` to `Invoke-ScriptAnalyzer` (BUG-006a, ADR-007)
+- ✅ `test` job's `Invoke-Pester` call switched to set `$cfg.Run.PassThru = $true` on the configuration object — Pester v5's Simple and Advanced parameter sets are mutually exclusive and `-Configuration` cannot be combined with `-PassThru` directly
+- ✅ `actions/checkout` bumped v4 → v5 (4 references, one per job) and `actions/upload-artifact` bumped v4 → v6 (1 reference) ahead of the GitHub Node 20 deprecation. Both default to Node 24 and require Actions Runner 2.327.1+; GitHub-hosted runners are kept current automatically.
 
 ### `PSScriptAnalyzerSettings.psd1` *(new in v3)*
 - Single-purpose lint-rule configuration consumed only by the CI `lint` job (ADR-007)

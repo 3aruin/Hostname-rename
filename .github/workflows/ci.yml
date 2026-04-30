@@ -73,14 +73,20 @@ jobs:
 
       - name: Run Pester
         run: |
+          # Pester v5 has two mutually exclusive parameter sets:
+          #   Simple    -- accepts -Path, -PassThru, etc. as direct parameters
+          #   Advanced  -- accepts -Configuration only
+          # Mixing them throws "Parameter set cannot be resolved". When using
+          # -Configuration, PassThru must be set on the config object instead.
           $cfg = New-PesterConfiguration
-          $cfg.Run.Path       = "./tests"
-          $cfg.Output.Verbosity = "Detailed"
-          $cfg.TestResult.Enabled    = $true
-          $cfg.TestResult.OutputPath = "test-results.xml"
+          $cfg.Run.Path                = "./tests"
+          $cfg.Run.PassThru            = $true
+          $cfg.Output.Verbosity        = "Detailed"
+          $cfg.TestResult.Enabled      = $true
+          $cfg.TestResult.OutputPath   = "test-results.xml"
           $cfg.TestResult.OutputFormat = "NUnitXml"
 
-          $result = Invoke-Pester -Configuration $cfg -PassThru
+          $result = Invoke-Pester -Configuration $cfg
 
           if ($result.FailedCount -gt 0) {
               Write-Error "$($result.FailedCount) Pester test(s) failed."

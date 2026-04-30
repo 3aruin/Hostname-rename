@@ -381,6 +381,62 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 
 ---
 
+### BUG-010 · `PSUseShouldProcessForStateChangingFunctions` false positive on pure `New-` functions
+
+**Severity:** Low — blocks the `lint` CI job, but the underlying functions are correct  
+**Status:** ✅ Resolved in v3 (2026-04-30)  
+**Location:** `naming.ps1` — `New-DeviceName`, `New-UserDeviceName`
+
+**Was:** With the missing `naming.ps1` now committed, the lint job ran against it for the first time and fired:
+
+```
+PSUseShouldProcessForStateChangingFunctions  Warning  naming.ps1  56
+  Function 'New-DeviceName' has verb that could change system state.
+  Therefore, the function has to support 'ShouldProcess'.
+
+PSUseShouldProcessForStateChangingFunctions  Warning  naming.ps1  88
+  Function 'New-UserDeviceName' has verb that could change system state.
+  Therefore, the function has to support 'ShouldProcess'.
+```
+
+The rule's heuristic: any function whose verb is in PowerShell's "state-changing" set (`New-`, `Set-`, `Remove-`, `Start-`, `Stop-`, `Restart-`, `Reset-`, `Update-`) should support `-WhatIf` / `-Confirm` so callers can preview or skip the side effect.
+
+Both functions in question are pure: they take strings as parameters, compose a new string, and return it. Nothing to confirm, nothing to roll back. The `New-` verb is technically defensible for "constructs a new value" (cf. `New-Object`, `New-TimeSpan`, `New-Guid` — all pure value constructors that don't support `ShouldProcess`), but the rule can't tell the difference between value-constructing `New-` functions and resource-creating ones.
+
+**Resolution:** Per-function suppression via `[Diagnostics.CodeAnalysis.SuppressMessageAttribute]` placed between the comment-based help and the `param` block:
+
+```powershell
+function New-DeviceName {
+    <#
+    .SYNOPSIS
+        Assembles the Gateway-mode device name from its components.
+    ...
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure function: composes and returns a string from input parameters. Does not modify any state, so ShouldProcess is not applicable.'
+    )]
+    param (...)
+    ...
+}
+```
+
+Same attribute applied to `New-UserDeviceName`.
+
+**Alternatives considered and rejected:**
+
+| Alternative | Why rejected |
+|---|---|
+| Add the rule to `PSScriptAnalyzerSettings.psd1` (extending ADR-007) | ADR-007 is for rules that don't fit the codebase *at all*. This rule fits the codebase fine — it would correctly fire if someone added e.g. `Set-DeviceConfig` that wrote to disk without `ShouldProcess`. Project-wide exclusion would silence those future cases too. |
+| Rename to `Format-DeviceName` / `ConvertTo-DeviceName` | `Format-` is for output layout (`Format-Table`, `Format-List`); `ConvertTo-` implies converting one representation to another. Neither matches "compose a string from multiple inputs". `New-` is closer to right; the function builds a *new value*, like `New-Guid`. Renaming would also break callers in `rename.ps1`. |
+| Add `[CmdletBinding(SupportsShouldProcess)]` plus `if ($PSCmdlet.ShouldProcess(...))` | Misleading. The function would advertise `-WhatIf` semantics it doesn't actually need. A caller passing `-WhatIf` would expect the function to *not run*, but with nothing to skip, the implementation would either silently run anyway or return `$null`. Either is worse than the false-positive warning. |
+
+**Forward-looking note:** when `Rename-DeviceSmart` gains `SupportsShouldProcess` in v3.1 (OQ-002), it will need real `if ($PSCmdlet.ShouldProcess(...))` calls around the actual `Rename-Computer` invocation — that one *is* state-changing. The `Rename-` verb is not in the rule's state-changing list, so PSScriptAnalyzer hasn't flagged it; that's a coverage gap in the rule, not a green light.
+
+**Why this surfaced now:** earlier CI runs hit the lint job with `naming.ps1` missing from the repo entirely, so the file was never analysed. Once it was committed, the rule fired on the first run.
+
+---
+
 ## Open Questions for v3
 
 ### OQ-001 · Should logging be implemented?
@@ -460,6 +516,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 | — | Fix BUG-007: PSUseUsingScopeModifierInNewRunspaces false positive in launcher fetch loop | Bug | Medium | ✅ Done — `launcher.ps1` switched to `$using:url` |
 | — | Fix BUG-008: Pester v5 container failure from Discovery-phase `$fn` and malformed `InModuleScope` | Bug | Medium | ✅ Done — `tests/Hostname-Rename.Tests.ps1` restructured to use `$script:fn` BeforeAll |
 | — | Fix BUG-009: dot-source path mixed-slash failure on Windows runners | Bug | Medium | ✅ Done — `tests/Hostname-Rename.Tests.ps1` BeforeAll switched to `Join-Path` |
+| — | Fix BUG-010: `PSUseShouldProcessForStateChangingFunctions` false positive on pure `New-` functions | Bug | Low | ✅ Done — per-function `SuppressMessageAttribute` on `New-DeviceName` and `New-UserDeviceName` in `naming.ps1` |
 | — | Bump GitHub Actions to Node 24 versions ahead of Node 20 deprecation (2026-06-02 / 2026-09-16) | Infra | Medium | ✅ Done — `actions/checkout@v5`, `actions/upload-artifact@v6` in `ci.yml` |
 | 5 | Add `SupportsShouldProcess` / `-WhatIf` to `Rename-DeviceSmart` (OQ-002) | Enhancement | Medium | ⬜ Open — deferred to v3.1 |
 | 7 | Add optional logging scaffold (OQ-001) | Enhancement | Low | ⬜ Open — deferred to v3.1 |
@@ -490,6 +547,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - No bugs found; logic verified correct by pre-launch audit
 - `New-DeviceName`, `New-UserDeviceName`, and `Select-NamingMode` all covered by Pester tests
 - Contains 8 `Write-Host` calls in `Select-NamingMode` for the interactive mode prompt — covered by the project-wide `PSAvoidUsingWriteHost` exclusion (BUG-006a, ADR-007); no source change required
+- ✅ `New-DeviceName` and `New-UserDeviceName` annotated with `[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', ...)]` — both are pure value-constructing functions and do not need `-WhatIf`/`-Confirm` (BUG-010). Per-function suppression preserves the rule's coverage for any future state-changing function.
 
 ### `rename.ps1`
 - ✅ `-NonInteractive:$NonInteractive` forwarded to `Get-NetworkContext` (BUG-002)

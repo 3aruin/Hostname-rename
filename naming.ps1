@@ -64,6 +64,10 @@ function New-DeviceName {
                  {ORG}{WH}{LOC}-{Type}-{Serial}
         Throws if even the shortened form exceeds 15 characters.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure function: composes and returns a string from input parameters. Does not modify any state, so ShouldProcess is not applicable.'
+    )]
     param (
         [string]$ORG,
         [string]$WH,
@@ -96,6 +100,10 @@ function New-UserDeviceName {
         Name is already truncated to 11 chars by Get-UserName, but a safety
         check is applied here as well.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure function: composes and returns a string from input parameters. Does not modify any state, so ShouldProcess is not applicable.'
+    )]
     param (
         [string]$WH,
         [string]$LOC,

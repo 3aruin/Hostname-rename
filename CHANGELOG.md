@@ -84,6 +84,18 @@ Date updated from 2026-04-28 to 2026-04-30 to reflect pre-launch audit fixes app
     Pester v5 pattern for cross-block state); the assignment and all eight
     call sites updated.
 
+- **BUG-010** · `naming.ps1` — `PSUseShouldProcessForStateChangingFunctions`
+  fired on `New-DeviceName` and `New-UserDeviceName`. PSScriptAnalyzer treats
+  every `New-`-verb function as a candidate resource-creation function that
+  should expose `-WhatIf`/`-Confirm` semantics. Both functions are pure: they
+  compose a string from input parameters and return it, with no state change
+  to confirm or roll back. Suppressed per-function via
+  `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` with a
+  `Justification` documenting why, rather than excluding the rule globally
+  in `PSScriptAnalyzerSettings.psd1` — that would silence the rule for any
+  *future* state-changing function added to the codebase, which is exactly
+  the case the rule is designed to catch.
+
 - **BUG-009** · `tests/Hostname-Rename.Tests.ps1` — Pester container kept
   failing after BUG-008 with a real error this time:
   `CommandNotFoundException: The term 'D:\...\tests/../naming.ps1' is not

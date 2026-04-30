@@ -42,12 +42,51 @@ Date updated from 2026-04-28 to 2026-04-30 to reflect pre-launch audit fixes app
     `REPLACE_WITH_COMMIT_SHA`; `continue-on-error: true` on `main` only so the
     canonical template state does not break CI
 
+- **`PSScriptAnalyzerSettings.psd1`** — centralised analyzer configuration
+  (ADR-007). Excludes `PSAvoidUsingWriteHost` project-wide with documented
+  rationale: this is an interactive console tool and `Write-Host` is correct
+  for menus, prompts, and operator-visible status. `Write-Output` would corrupt
+  function return values; `Write-Information` would be invisible without callers
+  setting `$InformationPreference = 'Continue'`. The `lint` job in `ci.yml`
+  passes the file via `Invoke-ScriptAnalyzer -Settings`.
+
 - **`CONTRIBUTING.md`** — deployment workflow (step-by-step, fork and canonical repo),
   customisation points (gateways, departments, device types, `$GATEWAY_MAP`
   externalisation pattern), local test instructions, PR process, code style requirements,
   and a v3.1 planned work table.
 
 ### Fixed
+
+- **BUG-006** · CI lint pipeline — first run of `Invoke-ScriptAnalyzer` against
+  the v3 codebase surfaced 15 warnings across three rules. All three resolved
+  before tagging:
+
+  - **`PSAvoidUsingWriteHost`** (12 occurrences across `device.ps1`,
+    `rename.ps1`, and `naming.ps1`) — suppressed project-wide via the new
+    `PSScriptAnalyzerSettings.psd1` (ADR-007). Write-Host is intentional for
+    interactive prompts; replacing it with `Write-Output` would corrupt
+    function returns and `Write-Information` is invisible without caller-set
+    `$InformationPreference`.
+
+  - **`PSUseBOMForUnicodeEncodedFile`** (3 files: `network.ps1`, `rename.ps1`,
+    `tests/Hostname-Rename.Tests.ps1`) — non-ASCII characters (em dashes `—`,
+    box-drawing `─`, arrows `→`) replaced with ASCII equivalents (`--`, `-`,
+    `->`). Adding a UTF-8 BOM was the alternative but would have changed the
+    bytes of `network.ps1` in a way that left the Get-Content/UTF8.GetBytes
+    hashing path in `launcher.ps1` and `Get-Hashes.ps1` interacting awkwardly
+    with the BOM character across PS 5.1 vs 7.x. Replacing with ASCII keeps
+    the integrity model unambiguous.
+
+  - **`PSUseDeclaredVarsMoreThanAssignments`** (1 occurrence in the test file)
+    — `$clean` scriptblock in the `Get-UserName name cleaning` Describe block
+    was set in `BeforeAll` and used in `It` blocks, but the analyzer cannot
+    trace across that boundary. Promoted to `$script:clean` (the documented
+    Pester v5 pattern for cross-block state); the assignment and all eight
+    call sites updated.
+
+- **`ci.yml`** — `lint` job updated to pass
+  `-Settings ./PSScriptAnalyzerSettings.psd1` to `Invoke-ScriptAnalyzer` so the
+  exclusion is honoured in CI.
 
 - **BUG-005** · `network.ps1` — `Get-NetworkContext` now opens with an
   `[string]::IsNullOrEmpty` guard before the map lookup. Previously, if
@@ -103,6 +142,7 @@ Date updated from 2026-04-28 to 2026-04-30 to reflect pre-launch audit fixes app
 | ADR-004 | Organisation data lives in `network.ps1`; example data uses RFC 5737 IPs |
 | ADR-005 | No external dependencies — built-in cmdlets and .NET types only |
 | ADR-006 | ORG code constrained to exactly two characters (15-char NetBIOS hostname limit) |
+| ADR-007 | Suppress `PSAvoidUsingWriteHost` project-wide via `PSScriptAnalyzerSettings.psd1` (interactive console tool; alternatives break runtime behaviour) |
 
 ---
 

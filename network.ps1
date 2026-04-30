@@ -4,7 +4,7 @@
 # -- Gateway Map --------------------------------------------------------------
 # Add an entry here for every site gateway this tool will be deployed to.
 # Key   = default gateway IP (string)
-# ORG   = two-character organisation code   — must be exactly 2 chars to stay within
+# ORG   = two-character organisation code   -- must be exactly 2 chars to stay within
 #         the 15-character Windows NetBIOS hostname limit
 # WH    = two-digit site/warehouse number   (e.g. "01", "09")
 # LOC   = single location letter            (e.g. "R", "W")
@@ -53,7 +53,7 @@ function Get-NetworkContext {
 
     .NOTES
         If the gateway is null/empty (no network adapter has a default gateway):
-          - Always throws with a clear "no gateway detected" message — this
+          - Always throws with a clear "no gateway detected" message -- this
             condition is equally wrong in interactive and non-interactive modes.
 
         If the gateway is not in GATEWAY_MAP:

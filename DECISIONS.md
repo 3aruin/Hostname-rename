@@ -94,6 +94,25 @@ Reviewed files: `launcher.ps1`, `network.ps1`, `device.ps1`, `naming.ps1`, `rena
 
 ---
 
+### ADR-007 · Suppress `PSAvoidUsingWriteHost` project-wide
+
+**Status:** Accepted — implemented in v3 (2026-04-30)  
+**Decision:** A project-level `PSScriptAnalyzerSettings.psd1` excludes the `PSAvoidUsingWriteHost` rule. The `lint` job in `ci.yml` passes the file to `Invoke-ScriptAnalyzer` via `-Settings`.  
+**Rationale:** This tool's user surface is the PowerShell console — interactive menus (mode selection, profile picker), confirmations, and operator-visible status messages. The two PSScriptAnalyzer-recommended alternatives both break the tool:
+
+| Alternative | Why it fails here |
+|---|---|
+| `Write-Output` | Writes to the success stream. PowerShell function return values *are* the success stream, so prompt and status text would be returned alongside the actual return value (e.g. `Get-Department` would return both the printed prompt text and the dept code), corrupting every caller. |
+| `Write-Information` | Invisible unless the caller sets `$InformationPreference = 'Continue'` or passes `-InformationAction Continue`. End users running a one-shot `irm \| iex` will not have set this. The prompts would simply not appear. |
+
+`Write-Host` is the intended cmdlet for interactive UI in PowerShell 5+ (the underlying issue the rule was created for — "you can't capture or redirect it" — was resolved when `Write-Host` was rewritten to write to the information stream in PS 5.0). The rule remains useful for catching cases where someone wrote a function meant to *return* data but printed it instead; that is not what is happening in this codebase.
+
+**Scope of the suppression:** the rule is excluded for *all* `.ps1` files in the repo. `Write-Verbose` is still used for debug-level detail throughout, so the verbose/host distinction is preserved at the source-code level even though only one of them is enforced.
+
+**Alternative considered:** per-function suppression via `[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]`. Rejected because every interactive function in the codebase would need the attribute, and any new interactive function would silently re-introduce the warning until someone added it. A single project-level decision documented here and in the settings file is clearer.
+
+---
+
 ## Known Bugs
 
 ### BUG-001 · `-FolderPath` and `-Username` parameters documented but not implemented
@@ -190,6 +209,45 @@ This condition is treated as always-fatal (no interactive/NonInteractive split) 
 
 ---
 
+### BUG-006 · PSScriptAnalyzer lint failures on first CI run
+
+**Severity:** Medium — blocks CI, so blocks PR merges  
+**Status:** ✅ Resolved in v3 (2026-04-30)  
+**Location:** `device.ps1`, `naming.ps1`, `rename.ps1`, `network.ps1`, `tests/Hostname-Rename.Tests.ps1`, `.github/workflows/ci.yml`
+
+**Was:** The first run of `Invoke-ScriptAnalyzer` against the v3 codebase (under the new CI pipeline from OQ-005) emitted 15 warnings across three rules. Until resolved, the `lint` job failed on every push, blocking merges.
+
+| Rule | Files | Count |
+|---|---|---|
+| `PSAvoidUsingWriteHost` | `device.ps1`, `rename.ps1`, `naming.ps1`* | 12 |
+| `PSUseBOMForUnicodeEncodedFile` | `network.ps1`, `rename.ps1`, `tests/Hostname-Rename.Tests.ps1` | 3 |
+| `PSUseDeclaredVarsMoreThanAssignments` | `tests/Hostname-Rename.Tests.ps1` | 1 |
+
+*\*The CI output as recorded only showed `device.ps1` and `rename.ps1` for `PSAvoidUsingWriteHost`, but `naming.ps1` contains 8 functionally identical `Write-Host` calls in `Select-NamingMode`. The output appears to have been truncated. The fix covers all three files either way.*
+
+**Resolution — three sub-fixes, one bug entry:**
+
+**6a. `PSAvoidUsingWriteHost`** → see ADR-007. Excluded project-wide via the new `PSScriptAnalyzerSettings.psd1`. The lint job in `ci.yml` passes the file to `Invoke-ScriptAnalyzer` with `-Settings ./PSScriptAnalyzerSettings.psd1`.
+
+**6b. `PSUseBOMForUnicodeEncodedFile`** → non-ASCII characters replaced with ASCII equivalents in three files:
+
+| File | Characters replaced |
+|---|---|
+| `network.ps1` | em dash `—` → `--` (2 occurrences in comment lines) |
+| `rename.ps1` | box drawing `──` → `--`, `─` → `-` (User-mode and Gateway-mode section dividers) |
+| `tests/Hostname-Rename.Tests.ps1` | `─` → `-`, `→` → `->`, `—` → `--` (all section dividers and inline arrows) |
+
+**Alternative considered:** add a UTF-8 BOM to each file. Rejected because:
+- It changes the byte content of `network.ps1`, which would force a manifest rehash and a new deployed commit SHA purely for cosmetic comment characters
+- The hashing path in `launcher.ps1` (`Get-Content -Raw -Encoding UTF8` then `[Text.Encoding]::UTF8.GetBytes()`) handles BOMs differently across PS 5.1 and 7.x — a BOM at the source could subtly shift hashes between environments and undermine the integrity check
+- ASCII keeps the integrity model unambiguous and the diff to `$MANIFEST` is the absolute minimum
+
+**6c. `PSUseDeclaredVarsMoreThanAssignments`** → in the `Get-UserName name cleaning` Describe block of the test file, `$clean` was set in `BeforeAll` and used inside `It` blocks. PSScriptAnalyzer cannot trace state across that boundary and flagged the assignment as unused. The variable was promoted to `$script:clean` (the documented Pester v5 pattern for cross-block state); the assignment and all eight call sites updated. No runtime behaviour change.
+
+**Why this happened only now:** v3 is the first version with CI. v2 was internally deployed and never lint-checked. All three rules have been firing since v2 but went unobserved.
+
+---
+
 ## Open Questions for v3
 
 ### OQ-001 · Should logging be implemented?
@@ -265,6 +323,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 | 12 | Document `$GATEWAY_MAP` externalisation pattern for forks (ADR-004) | Doc | Medium | ✅ Done — `CONTRIBUTING.md` → Customisation Points |
 | 9 | Add `CHANGELOG.md` | Open-source hygiene | Low | ✅ Done — `CHANGELOG.md` |
 | — | Fix BUG-005: null/empty gateway misleading error (found in pre-launch audit) | Bug | Low | ✅ Done — `network.ps1` |
+| — | Fix BUG-006: PSScriptAnalyzer lint failures on first CI run (Write-Host, BOM, unused var) | Bug / Infra | Medium | ✅ Done — `PSScriptAnalyzerSettings.psd1`, `ci.yml`, plus ASCII fixes to `network.ps1`, `rename.ps1`, test file (ADR-007) |
 | 5 | Add `SupportsShouldProcess` / `-WhatIf` to `Rename-DeviceSmart` (OQ-002) | Enhancement | Medium | ⬜ Open — deferred to v3.1 |
 | 7 | Add optional logging scaffold (OQ-001) | Enhancement | Low | ⬜ Open — deferred to v3.1 |
 
@@ -282,6 +341,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - ✅ `$FALLBACK_CONTEXT` variable added — replaces hardcoded `RS` fallback (BUG-002)
 - ✅ `Get-NetworkContext` updated — throws in NonInteractive, warns prominently in interactive (BUG-002)
 - ✅ Null/empty gateway guard added to `Get-NetworkContext` — throws with a clear "no gateway detected" message before the map lookup (BUG-005)
+- ✅ Two em dashes (`—`) in comment lines 7 and 56 replaced with `--` (BUG-006b)
 
 ### `device.ps1`
 - ✅ CIM job cleanup fixed — `$jobs` array + `finally` block (BUG-003; fix confirmed and applied in pre-launch audit 2026-04-30)
@@ -291,9 +351,11 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 ### `naming.ps1`
 - No bugs found; logic verified correct by pre-launch audit
 - `New-DeviceName`, `New-UserDeviceName`, and `Select-NamingMode` all covered by Pester tests
+- Contains 8 `Write-Host` calls in `Select-NamingMode` for the interactive mode prompt — covered by the project-wide `PSAvoidUsingWriteHost` exclusion (BUG-006a, ADR-007); no source change required
 
 ### `rename.ps1`
 - ✅ `-NonInteractive:$NonInteractive` forwarded to `Get-NetworkContext` (BUG-002)
+- ✅ Box-drawing characters in section dividers (`──`, `─`) replaced with ASCII (`--`, `-`) (BUG-006b)
 - `Rename-DeviceSmart` still needs `SupportsShouldProcess` (OQ-002, checklist item 5) — deferred to v3.1
 - Param additions for BUG-001 deferred to v3.1
 
@@ -305,11 +367,20 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - Pester v5 test suite covering all pure-logic functions: `New-DeviceName`, `New-UserDeviceName`, `Get-SerialLast4` cleaning and padding, `Get-UserName` UPN cleaning steps, `Select-NamingMode` switch precedence, `Get-NetworkContext` mapping and fallback, and a full integration check of the 15-character NetBIOS limit across all valid department/type combinations
 - No WMI or OS dependency — all tests run in CI without a real Windows device
 - Run locally: `Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed`
+- ✅ Section-divider chars (`─`), inline arrows (`→`), and em dashes (`—`) replaced with ASCII equivalents (BUG-006b)
+- ✅ `$clean` scriptblock in `Get-UserName name cleaning` Describe block promoted to `$script:clean` so PSScriptAnalyzer recognises the cross-block use; assignment plus all eight call sites updated (BUG-006c)
 
 ### `.github/workflows/ci.yml` *(new in v3)*
 - Four jobs: `lint`, `test`, `manifest`, `placeholder` — see OQ-005 for detail
 - `lint` runs a PS 5.1 / 7.x matrix via `windows-latest`
 - `placeholder` runs on `ubuntu-latest` (faster, no PS needed for a grep check)
+- ✅ `lint` job updated to pass `-Settings ./PSScriptAnalyzerSettings.psd1` to `Invoke-ScriptAnalyzer` (BUG-006a, ADR-007)
+
+### `PSScriptAnalyzerSettings.psd1` *(new in v3)*
+- Single-purpose lint-rule configuration consumed only by the CI `lint` job (ADR-007)
+- Currently excludes `PSAvoidUsingWriteHost` only — see ADR-007 for the full rationale and rejected alternatives
+- Not in `$MANIFEST` and not deployed at runtime — does not need a manifest entry
+- New rule exclusions added here in future require updating ADR-007 with the rationale
 
 ### `CONTRIBUTING.md` *(new in v3)*
 - Deployment Workflow (step-by-step, fork and canonical repo)

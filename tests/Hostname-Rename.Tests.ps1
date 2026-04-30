@@ -15,7 +15,7 @@ BeforeAll {
     . "$PSScriptRoot/../device.ps1"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Describe "New-DeviceName" {
 
     Context "Full name fits within 15 characters" {
@@ -37,7 +37,7 @@ Describe "New-DeviceName" {
         }
     }
 
-    Context "Full name overflows — department is omitted" {
+    Context "Full name overflows -- department is omitted" {
 
         It "Drops department segment and warns when full name is 16 chars" {
             # AC01R-CSDT-A3F92 = 16 chars
@@ -51,17 +51,17 @@ Describe "New-DeviceName" {
         }
     }
 
-    Context "Both full and shortened overflow — throws" {
+    Context "Both full and shortened overflow -- throws" {
 
         It "Throws when even the shortened name exceeds 15 characters" {
-            # Pathological: ORG=AC, WH=01, LOC=R, Type=DT, Serial=TOOLONG9 → AC01R-DT-TOOLONG9 = 17
+            # Pathological: ORG=AC, WH=01, LOC=R, Type=DT, Serial=TOOLONG9 -> AC01R-DT-TOOLONG9 = 17
             { New-DeviceName -ORG "AC" -WH "01" -LOC "R" -Department "CS" -Type "DT" -Serial "TOOLONG9" } |
                 Should -Throw
         }
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Describe "New-UserDeviceName" {
 
     It "Returns the full name when it fits within 15 chars" {
@@ -76,7 +76,7 @@ Describe "New-UserDeviceName" {
     }
 
     It "Truncates the name when result would exceed 15 chars" {
-        # "01R-JaneDoe12345" = 16 → truncate Name to 11
+        # "01R-JaneDoe12345" = 16 -> truncate Name to 11
         New-UserDeviceName -WH "01" -LOC "R" -Name "JaneDoe12345" |
             Should -Be "01R-JaneDoe1234"
     }
@@ -92,12 +92,12 @@ Describe "New-UserDeviceName" {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Describe "Get-SerialLast4" {
 
     Context "Serial longer than 4 chars" {
         It "Returns the last 4 chars of a cleaned 8-char serial" {
-            # Cleaned: VMWA3F9B2C1 → last 4: B2C1
+            # Cleaned: VMWA3F9B2C1 -> last 4: B2C1
             InModuleScope -Scriptblock {
                 # Mock CIM since we only want to test the logic
             }
@@ -128,33 +128,34 @@ Describe "Get-SerialLast4" {
         }
     }
 
-    Context "Serial shorter than 4 chars — pad with leading zeros" {
+    Context "Serial shorter than 4 chars -- pad with leading zeros" {
         $fn = { param($s)
             $c = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
             if ($c.Length -ge 4) { return $c.Substring($c.Length - 4) }
             return $c.PadLeft(4, '0') }
 
-        It "3 chars → left-pads to 4" {
+        It "3 chars -> left-pads to 4" {
             & $fn "ABC"   | Should -Be "0ABC"
         }
-        It "1 char → left-pads to 4" {
+        It "1 char -> left-pads to 4" {
             & $fn "X"     | Should -Be "000X"
         }
-        It "Empty string → four zeros" {
+        It "Empty string -> four zeros" {
             & $fn ""      | Should -Be "0000"
         }
-        It "All special chars → four zeros" {
+        It "All special chars -> four zeros" {
             & $fn "---"   | Should -Be "0000"
         }
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Describe "Get-UserName name cleaning" {
 
     # Expose the cleaning logic via a scriptblock to test without hitting C:\Users
+    # $script: scope makes the cross-scope use visible to PSScriptAnalyzer
     BeforeAll {
-        $clean = {
+        $script:clean = {
             param($selected)
             $c = $selected
             foreach ($sep in '@', '_') {
@@ -168,51 +169,51 @@ Describe "Get-UserName name cleaning" {
     }
 
     It "Strips @ suffix (standard UPN)" {
-        & $clean "jane.doe@contoso.com" | Should -Be "janedoe"
+        & $script:clean "jane.doe@contoso.com" | Should -Be "janedoe"
     }
 
     It "Strips _ suffix (Entra joined UPN style)" {
-        & $clean "JaneDoe_contoso_com" | Should -Be "JaneDoe"
+        & $script:clean "JaneDoe_contoso_com" | Should -Be "JaneDoe"
     }
 
     It "Leaves plain names unchanged" {
-        & $clean "JohnSmith" | Should -Be "JohnSmith"
+        & $script:clean "JohnSmith" | Should -Be "JohnSmith"
     }
 
     It "Removes dots in prefix (UPN style: first.last)" {
-        & $clean "john.smith" | Should -Be "johnsmith"
+        & $script:clean "john.smith" | Should -Be "johnsmith"
     }
 
     It "Truncates to 11 characters" {
-        & $clean "VeryLongNameHere" | Should -Be "VeryLongNam"
+        & $script:clean "VeryLongNameHere" | Should -Be "VeryLongNam"
     }
 
     It "Result is never longer than 11 characters" {
-        (& $clean "AVeryVeryVeryLongFolderName").Length | Should -BeLessOrEqual 11
+        (& $script:clean "AVeryVeryVeryLongFolderName").Length | Should -BeLessOrEqual 11
     }
 
-    It "Processes @ before _ — strips at @ first, then _ in remainder" {
-        # user_name@domain.com  → strip @  → user_name → strip _  → user
-        & $clean "user_name@domain.com" | Should -Be "user"
+    It "Processes @ before _ -- strips at @ first, then _ in remainder" {
+        # user_name@domain.com  -> strip @  -> user_name -> strip _  -> user
+        & $script:clean "user_name@domain.com" | Should -Be "user"
     }
 
     It "Throws when cleaned result is empty" {
-        { & $clean "___" } | Should -Throw
+        { & $script:clean "___" } | Should -Throw
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Describe "Select-NamingMode switch precedence" {
 
-    It "-Folder → User mode" {
+    It "-Folder -> User mode" {
         Select-NamingMode -Folder | Should -Be "User"
     }
 
-    It "-Gateway → Gateway mode" {
+    It "-Gateway -> Gateway mode" {
         Select-NamingMode -Gateway | Should -Be "Gateway"
     }
 
-    It "-NonInteractive → Gateway mode" {
+    It "-NonInteractive -> Gateway mode" {
         Select-NamingMode -NonInteractive | Should -Be "Gateway"
     }
 
@@ -225,10 +226,10 @@ Describe "Select-NamingMode switch precedence" {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Describe "Get-NetworkContext" {
 
-    Context "Known gateway — returns correct context" {
+    Context "Known gateway -- returns correct context" {
 
         It "Returns the right ORG/WH/LOC for a mapped gateway" {
             $result = Get-NetworkContext -Gateway "192.0.2.1"
@@ -238,7 +239,7 @@ Describe "Get-NetworkContext" {
         }
     }
 
-    Context "Null or empty gateway — always throws" {
+    Context "Null or empty gateway -- always throws" {
 
         It "Throws with a 'no gateway detected' message when gateway is empty" {
             { Get-NetworkContext -Gateway "" } |
@@ -251,7 +252,7 @@ Describe "Get-NetworkContext" {
         }
     }
 
-    Context "Unmapped gateway — NonInteractive throws" {
+    Context "Unmapped gateway -- NonInteractive throws" {
 
         It "Throws with actionable GATEWAY_MAP message in NonInteractive mode" {
             { Get-NetworkContext -Gateway "10.0.0.1" -NonInteractive } |
@@ -259,7 +260,7 @@ Describe "Get-NetworkContext" {
         }
     }
 
-    Context "Unmapped gateway — Interactive returns fallback" {
+    Context "Unmapped gateway -- Interactive returns fallback" {
 
         It "Returns FALLBACK_CONTEXT in interactive mode" {
             $result = Get-NetworkContext -Gateway "10.0.0.1"
@@ -270,8 +271,8 @@ Describe "Get-NetworkContext" {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-Describe "15-character NetBIOS limit — integration" {
+# -----------------------------------------------------------------------------
+Describe "15-character NetBIOS limit -- integration" {
 
     It "Gateway mode: all valid department+type combinations stay within 15 chars" {
         $depts  = @("CS","SR","OP","HQ","IT","WS")

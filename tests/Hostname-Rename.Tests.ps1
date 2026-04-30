@@ -95,56 +95,46 @@ Describe "New-UserDeviceName" {
 # -----------------------------------------------------------------------------
 Describe "Get-SerialLast4" {
 
+    # Helper scriptblock mirroring the cleaning/padding logic from
+    # Get-SerialLast4 in device.ps1, so we can test the logic without WMI.
+    # $script: scope makes it visible across the Run-phase It blocks
+    # (variables defined during Discovery are not visible during Run in Pester v5).
+    BeforeAll {
+        $script:fn = {
+            param($s)
+            $c = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
+            if ($c.Length -ge 4) { return $c.Substring($c.Length - 4) }
+            return $c.PadLeft(4, '0')
+        }
+    }
+
     Context "Serial longer than 4 chars" {
         It "Returns the last 4 chars of a cleaned 8-char serial" {
             # Cleaned: VMWA3F9B2C1 -> last 4: B2C1
-            InModuleScope -Scriptblock {
-                # Mock CIM since we only want to test the logic
-            }
-            # Test cleaning + last-4 extraction via a helper wrapper
-            $fn = {
-                param($s)
-                $clean = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
-                if ($clean.Length -ge 4) { return $clean.Substring($clean.Length - 4) }
-                return $clean.PadLeft(4, '0')
-            }
-            & $fn "VMW-A3F9B2C1" | Should -Be "B2C1"
+            & $script:fn "VMW-A3F9B2C1" | Should -Be "B2C1"
         }
 
         It "Strips hyphens and returns last 4" {
-            $fn = { param($s)
-                $c = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
-                if ($c.Length -ge 4) { return $c.Substring($c.Length - 4) }
-                return $c.PadLeft(4, '0') }
-            & $fn "SN-##-1234" | Should -Be "1234"
+            & $script:fn "SN-##-1234" | Should -Be "1234"
         }
 
         It "Normalises lowercase to uppercase" {
-            $fn = { param($s)
-                $c = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
-                if ($c.Length -ge 4) { return $c.Substring($c.Length - 4) }
-                return $c.PadLeft(4, '0') }
-            & $fn "abcd" | Should -Be "ABCD"
+            & $script:fn "abcd" | Should -Be "ABCD"
         }
     }
 
     Context "Serial shorter than 4 chars -- pad with leading zeros" {
-        $fn = { param($s)
-            $c = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
-            if ($c.Length -ge 4) { return $c.Substring($c.Length - 4) }
-            return $c.PadLeft(4, '0') }
-
         It "3 chars -> left-pads to 4" {
-            & $fn "ABC"   | Should -Be "0ABC"
+            & $script:fn "ABC"   | Should -Be "0ABC"
         }
         It "1 char -> left-pads to 4" {
-            & $fn "X"     | Should -Be "000X"
+            & $script:fn "X"     | Should -Be "000X"
         }
         It "Empty string -> four zeros" {
-            & $fn ""      | Should -Be "0000"
+            & $script:fn ""      | Should -Be "0000"
         }
         It "All special chars -> four zeros" {
-            & $fn "---"   | Should -Be "0000"
+            & $script:fn "---"   | Should -Be "0000"
         }
     }
 }

@@ -9,10 +9,15 @@
 # CI runs this automatically on every push and PR via .github/workflows/ci.yml.
 
 BeforeAll {
-    # Dot-source modules directly -- no need for launcher or network access
-    . "$PSScriptRoot/../naming.ps1"
-    . "$PSScriptRoot/../network.ps1"
-    . "$PSScriptRoot/../device.ps1"
+    # Dot-source modules directly -- no need for launcher or network access.
+    # Use Join-Path rather than "$PSScriptRoot/../module.ps1": on Windows the
+    # dot-source operator does not normalise mixed-slash relative paths
+    # (\tests/../naming.ps1 fails command-lookup with CommandNotFoundException),
+    # whereas Join-Path produces the platform-correct separator either way.
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    . (Join-Path $repoRoot 'naming.ps1')
+    . (Join-Path $repoRoot 'network.ps1')
+    . (Join-Path $repoRoot 'device.ps1')
 }
 
 # -----------------------------------------------------------------------------

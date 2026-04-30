@@ -341,6 +341,46 @@ InModuleScope -Scriptblock {
 
 ---
 
+### BUG-009 · Pester container failure: dot-source path not normalised on Windows
+
+**Severity:** Medium — blocks the `test` CI job  
+**Status:** ✅ Resolved in v3 (2026-04-30)  
+**Location:** `tests/Hostname-Rename.Tests.ps1` (top-level `BeforeAll`)
+
+**Was:** With BUG-008 resolved, the next CI run produced an actual error message (rather than the empty-message container failure):
+
+```
+CommandNotFoundException: The term
+'D:\a\Hostname-rename\Hostname-rename\tests/../naming.ps1' is not recognized
+as a name of a cmdlet, function, script file, or executable program.
+at <ScriptBlock>, ...\Hostname-Rename.Tests.ps1:13
+```
+
+The `BeforeAll` was using:
+
+```powershell
+. "$PSScriptRoot/../naming.ps1"
+```
+
+On the GitHub Windows runner, `$PSScriptRoot` resolves with backslash separators (`D:\a\...\tests`), so the concatenated string is a mixed-slash path: `D:\...\tests/../naming.ps1`. PowerShell's dot-source operator does a command-name lookup that includes a path-resolution check, but on Windows that pre-resolution check does not fold the `/..` segment when the rest of the path uses backslashes. The lookup fails, falls through to command-name resolution (which doesn't find anything either), and throws `CommandNotFoundException`.
+
+**Resolution:** Replaced the three string-concatenated paths with `Join-Path` calls off a `Split-Path`-derived `$repoRoot`:
+
+```powershell
+$repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $repoRoot 'naming.ps1')
+. (Join-Path $repoRoot 'network.ps1')
+. (Join-Path $repoRoot 'device.ps1')
+```
+
+`Join-Path` uses the platform-native separator (`\` on Windows, `/` on Unix) regardless of how the inputs are written, and `Split-Path -Parent` is the documented way to walk up one directory level. The result is a clean absolute path that the dot-source operator resolves without ambiguity.
+
+**Why the original pattern is in Pester's docs:** Pester's quick-start example uses `. $PSScriptRoot/Get-Emoji.ps1` — a single-level path, no `..` traversal. The Pester docs don't show a parent-traversal pattern. The mixed-slash issue only manifests when you cross a directory boundary with `..`, which is what our test layout (modules at repo root, tests in a subfolder) requires.
+
+**Audit done at the same time:** A repo-wide grep for dot-source statements found no other instances of this pattern. `launcher.ps1` line 167 dot-sources scriptblock content (not a file path). `Get-Hashes.ps1` already uses `Join-Path`. No further fixes needed.
+
+---
+
 ## Open Questions for v3
 
 ### OQ-001 · Should logging be implemented?
@@ -419,6 +459,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 | — | Fix BUG-006: PSScriptAnalyzer lint failures on first CI run (Write-Host, BOM, unused var) | Bug / Infra | Medium | ✅ Done — `PSScriptAnalyzerSettings.psd1`, `ci.yml`, plus ASCII fixes to `network.ps1`, `rename.ps1`, test file (ADR-007) |
 | — | Fix BUG-007: PSUseUsingScopeModifierInNewRunspaces false positive in launcher fetch loop | Bug | Medium | ✅ Done — `launcher.ps1` switched to `$using:url` |
 | — | Fix BUG-008: Pester v5 container failure from Discovery-phase `$fn` and malformed `InModuleScope` | Bug | Medium | ✅ Done — `tests/Hostname-Rename.Tests.ps1` restructured to use `$script:fn` BeforeAll |
+| — | Fix BUG-009: dot-source path mixed-slash failure on Windows runners | Bug | Medium | ✅ Done — `tests/Hostname-Rename.Tests.ps1` BeforeAll switched to `Join-Path` |
 | — | Bump GitHub Actions to Node 24 versions ahead of Node 20 deprecation (2026-06-02 / 2026-09-16) | Infra | Medium | ✅ Done — `actions/checkout@v5`, `actions/upload-artifact@v6` in `ci.yml` |
 | 5 | Add `SupportsShouldProcess` / `-WhatIf` to `Rename-DeviceSmart` (OQ-002) | Enhancement | Medium | ⬜ Open — deferred to v3.1 |
 | 7 | Add optional logging scaffold (OQ-001) | Enhancement | Low | ⬜ Open — deferred to v3.1 |
@@ -467,6 +508,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - ✅ Section-divider chars (`─`), inline arrows (`→`), and em dashes (`—`) replaced with ASCII equivalents (BUG-006b)
 - ✅ `$clean` scriptblock in `Get-UserName name cleaning` Describe block promoted to `$script:clean` so PSScriptAnalyzer recognises the cross-block use; assignment plus all eight call sites updated (BUG-006c)
 - ✅ `Get-SerialLast4` Describe restructured (BUG-008): helper scriptblock moved from Context body level (Discovery phase, invisible at Run time in Pester v5) into a Describe-level `BeforeAll` using `$script:fn`. Empty `InModuleScope -Scriptblock { }` removed. Three duplicated inline helper copies in the first Context deduplicated against the new `BeforeAll`.
+- ✅ Top-level `BeforeAll` dot-source switched from `"$PSScriptRoot/../module.ps1"` to `Join-Path $repoRoot 'module.ps1'` after `$repoRoot = Split-Path -Parent $PSScriptRoot` (BUG-009). The original mixed-slash pattern fails on Windows when the `..` segment crosses a separator-direction boundary.
 
 ### `.github/workflows/ci.yml` *(new in v3)*
 - Four jobs: `lint`, `test`, `manifest`, `placeholder` — see OQ-005 for detail

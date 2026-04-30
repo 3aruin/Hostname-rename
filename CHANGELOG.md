@@ -84,6 +84,19 @@ Date updated from 2026-04-28 to 2026-04-30 to reflect pre-launch audit fixes app
     Pester v5 pattern for cross-block state); the assignment and all eight
     call sites updated.
 
+- **BUG-009** · `tests/Hostname-Rename.Tests.ps1` — Pester container kept
+  failing after BUG-008 with a real error this time:
+  `CommandNotFoundException: The term 'D:\...\tests/../naming.ps1' is not
+  recognized as a name of a cmdlet, function, script file, or executable
+  program.` On Windows runners, the dot-source operator's pre-resolution path
+  lookup does not normalise mixed-slash relative segments — the path arrives
+  as `\tests` (backslash from `$PSScriptRoot`) followed by `/..` (forward slash
+  from the test source), and the command resolver gives up before .NET's
+  Path normalisation gets a chance to fold the `..` segment. Replaced
+  `"$PSScriptRoot/../naming.ps1"` (and the two siblings) with a `Join-Path`
+  construction off `Split-Path -Parent $PSScriptRoot`. Cross-platform,
+  separator-agnostic, and the established PowerShell-idiomatic pattern.
+
 - **BUG-008** · `tests/Hostname-Rename.Tests.ps1` — first run of the Pester v5
   test job (after BUG-006/BUG-007 unblocked the lint stage and the
   `Run.PassThru` fix unblocked `Invoke-Pester`) failed the entire container:

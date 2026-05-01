@@ -84,6 +84,15 @@ Date updated from 2026-04-28 to 2026-04-30 to reflect pre-launch audit fixes app
     Pester v5 pattern for cross-block state); the assignment and all eight
     call sites updated.
 
+- **BUG-011** · `.github/workflows/ci.yml` — `placeholder` job (the only one
+  running on `ubuntu-latest`) failed every run with `ParserError: Missing
+  '(' after 'if' in if statement.` The workflow's top-level
+  `defaults.run.shell: pwsh` was applying to every step in every job,
+  including the Bash-syntax grep check on the Linux runner — pwsh was being
+  asked to parse `if grep -q "..." ...; then`. Added `shell: bash` to that
+  one step as a per-step override; the workflow-wide pwsh default stays
+  intact for the three Windows jobs.
+
 - **BUG-010** · `naming.ps1` — `PSUseShouldProcessForStateChangingFunctions`
   fired on `New-DeviceName` and `New-UserDeviceName`. PSScriptAnalyzer treats
   every `New-`-verb function as a candidate resource-creation function that

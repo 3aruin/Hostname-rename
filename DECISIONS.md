@@ -437,6 +437,58 @@ Same attribute applied to `New-UserDeviceName`.
 
 ---
 
+### BUG-011 · `placeholder` CI job tries to run Bash syntax under pwsh
+
+**Severity:** Low — blocks the `placeholder` CI job only; other three jobs were green by this point  
+**Status:** ✅ Resolved in v3 (2026-04-30)  
+**Location:** `.github/workflows/ci.yml` — `placeholder` job
+
+**Was:** With BUG-006 through BUG-010 resolved, the lint, test, and manifest jobs all went green. The `placeholder` job still failed:
+
+```
+ParserError: /home/runner/work/_temp/.../*.ps1:2
+Line 2: if grep -q "REPLACE_WITH_COMMIT_SHA" launcher.ps1; then
+        ~
+        Missing '(' after 'if' in if statement.
+shell: /usr/bin/pwsh -command ". '{0}'"
+```
+
+The shell line in the error is the giveaway: `/usr/bin/pwsh` was being asked to parse Bash syntax. Cause:
+
+```yaml
+defaults:
+  run:
+    shell: pwsh   # <-- workflow-wide default
+```
+
+…applies to every step in every job, including jobs running on `ubuntu-latest`. The `placeholder` job's grep check uses Bash syntax (it was always intended to — the rest of the workflow standardised on pwsh because three of the four jobs run PowerShell tooling on `windows-latest`). PowerShell on Linux still has pwsh installed, so the runner happily picks it up; it just can't parse `if grep ...; then`.
+
+**Resolution:** Per-step shell override on the offending step:
+
+```yaml
+- name: Fail if REPLACE_WITH_COMMIT_SHA is present in launcher.ps1
+  shell: bash
+  run: |
+    if grep -q "REPLACE_WITH_COMMIT_SHA" launcher.ps1; then
+      ...
+```
+
+Per-step `shell:` takes priority over both `defaults.run.shell` and the runner's OS-default shell, so this is the minimal, targeted fix. The three Windows jobs continue to inherit `shell: pwsh` from `defaults`.
+
+**Alternatives considered:**
+
+| Alternative | Why rejected |
+|---|---|
+| Set `shell: bash` at job level on `placeholder` | Equivalent end result, more verbose. The Bash usage is one step; documenting at step level keeps the override visible at the point of need. |
+| Rewrite the grep check in pwsh | Would work (`Select-String -Path launcher.ps1 -Pattern 'REPLACE_WITH_COMMIT_SHA' -Quiet`) and would let the job stay on Linux under the default shell. Rejected because Bash + grep is the natural form for "fail-on-string-found" CI checks; rewriting in pwsh would obscure intent for anyone scanning the workflow later. |
+| Drop `defaults.run.shell: pwsh` and tag every step explicitly | Heavy diff, gains nothing — three of the four jobs run pwsh exclusively. The default is correct for them. |
+
+**Also fixed in the same diff:** the success-message echo contained a literal em dash (`—`). Changed to `--` for consistency with the project-wide ASCII discipline established in BUG-006b. This wasn't causing failures (Linux runners handle UTF-8 fine in echoes), but kept inconsistent with the rest of the codebase.
+
+**Why this surfaced now:** the placeholder job has been failing since CI was added — this was the same as the lint and test failures, just at the bottom of the queue. Each fix peeled back a layer; with the upstream jobs finally green, this last one became visible. The job's `continue-on-error: ${{ github.ref == 'refs/heads/main' }}` setting meant it has *also* been silently failing on `main` since CI was added; that didn't show up as a CI red because of the soft-fail, but the job wasn't actually doing anything either way.
+
+---
+
 ## Open Questions for v3
 
 ### OQ-001 · Should logging be implemented?
@@ -517,6 +569,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 | — | Fix BUG-008: Pester v5 container failure from Discovery-phase `$fn` and malformed `InModuleScope` | Bug | Medium | ✅ Done — `tests/Hostname-Rename.Tests.ps1` restructured to use `$script:fn` BeforeAll |
 | — | Fix BUG-009: dot-source path mixed-slash failure on Windows runners | Bug | Medium | ✅ Done — `tests/Hostname-Rename.Tests.ps1` BeforeAll switched to `Join-Path` |
 | — | Fix BUG-010: `PSUseShouldProcessForStateChangingFunctions` false positive on pure `New-` functions | Bug | Low | ✅ Done — per-function `SuppressMessageAttribute` on `New-DeviceName` and `New-UserDeviceName` in `naming.ps1` |
+| — | Fix BUG-011: `placeholder` CI job tried to parse Bash under pwsh | Bug | Low | ✅ Done — per-step `shell: bash` override in `ci.yml` |
 | — | Bump GitHub Actions to Node 24 versions ahead of Node 20 deprecation (2026-06-02 / 2026-09-16) | Infra | Medium | ✅ Done — `actions/checkout@v5`, `actions/upload-artifact@v6` in `ci.yml` |
 | 5 | Add `SupportsShouldProcess` / `-WhatIf` to `Rename-DeviceSmart` (OQ-002) | Enhancement | Medium | ⬜ Open — deferred to v3.1 |
 | 7 | Add optional logging scaffold (OQ-001) | Enhancement | Low | ⬜ Open — deferred to v3.1 |
@@ -575,6 +628,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - ✅ `lint` job updated to pass `-Settings ./PSScriptAnalyzerSettings.psd1` to `Invoke-ScriptAnalyzer` (BUG-006a, ADR-007)
 - ✅ `test` job's `Invoke-Pester` call switched to set `$cfg.Run.PassThru = $true` on the configuration object — Pester v5's Simple and Advanced parameter sets are mutually exclusive and `-Configuration` cannot be combined with `-PassThru` directly
 - ✅ `actions/checkout` bumped v4 → v5 (4 references, one per job) and `actions/upload-artifact` bumped v4 → v6 (1 reference) ahead of the GitHub Node 20 deprecation. Both default to Node 24 and require Actions Runner 2.327.1+; GitHub-hosted runners are kept current automatically.
+- ✅ `placeholder` job's grep check tagged `shell: bash` to override the workflow-wide `defaults.run.shell: pwsh`. Without the override, the Linux runner was passing Bash syntax to pwsh, which failed parsing (BUG-011).
 
 ### `PSScriptAnalyzerSettings.psd1` *(new in v3)*
 - Single-purpose lint-rule configuration consumed only by the CI `lint` job (ADR-007)

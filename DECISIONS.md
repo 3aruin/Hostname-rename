@@ -3,6 +3,7 @@
 **Project:** Hostname-Rename  
 **License:** MIT © 2026 Simms  
 **Target:** v3 — clean, open GitHub release  
+**Latest release:** v3.0.1 (2026-05-02) — CI hygiene patch (BUG-006, BUG-007, BUG-008, Node 24 action bumps)  
 **Log started:** 2026-04-28  
 
 ---
@@ -193,7 +194,7 @@ This condition is treated as always-fatal (no interactive/NonInteractive split) 
 ### BUG-006 · `placeholder` CI job parser error masked by `continue-on-error: true`
 
 **Severity:** Medium — guard never actually fired; failed branches looked the same as passing ones  
-**Status:** ✅ Resolved (2026-05-01)  
+**Status:** ✅ Resolved (2026-05-01) — released in v3.0.1  
 **Location:** `.github/workflows/ci.yml → placeholder` job
 
 **Was:** A workflow-level `defaults.run.shell: pwsh` was set so the three PowerShell jobs (`lint`, `test`, `manifest`) wouldn't have to specify a shell on every step. The `placeholder` job runs on `ubuntu-latest` and its only step is a bash one-liner (`if grep -q "REPLACE_WITH_COMMIT_SHA" launcher.ps1; then ... fi`), but it inherited the global `pwsh` default. pwsh tried to parse the bash `if` as a PowerShell `if` statement and died on line 2:
@@ -209,6 +210,63 @@ The error fired before grep ran. Every push to `main` masked this because `conti
 **Resolution:** `shell: bash` set on the single step that needs it. The three other jobs still inherit `pwsh` from the global default since they all run PowerShell on Windows runners.
 
 **Lesson for future CI work:** A `continue-on-error` guard around a step that errors for the *wrong* reason (parser error) looks identical to one that errors for the *right* reason (guard tripped). When introducing `continue-on-error`, run the workflow on a feature branch at least once to confirm the underlying check actually executes.
+
+---
+
+### BUG-007 · `Get-Hashes.ps1` framing lost on output redirection (and PSScriptAnalyzer noise)
+
+**Severity:** Low — cosmetic CI failure, plus a latent edge case for redirection users  
+**Status:** ✅ Resolved (2026-05-01) — released in v3.0.1  
+**Location:** `tools/Get-Hashes.ps1`
+
+**Was:** The script was inconsistent about output streams. Eight `Write-Host` calls printed the manifest framing (header lines, opening `$MANIFEST = [ordered]@{`, closing `}`, "Next steps"), while the actual hash entries used a bare-string expression (`'    "{0}" = "{1}"' -f $file, $hex`) that went to the success stream. Two consequences:
+
+1. `PSScriptAnalyzer` flagged all eight `Write-Host` calls under `PSAvoidUsingWriteHost`, breaking the `lint` job in CI.
+2. Output redirection silently dropped half the script's output. `.\tools\Get-Hashes.ps1 > manifest.txt` produced a file containing only the inner hash lines, with no surrounding `$MANIFEST = [ordered]@{` / `}` framing — the user would have to copy the framing back in by hand. This was never a documented use case but it's a reasonable thing to try, and the failure mode was silent.
+
+**Resolution:** All eight `Write-Host` calls converted to bare-string expressions (`""`, `"# Paste this block ..."`, `"}"`, etc.). Everything now flows through the success stream. Interactive console output is identical (PowerShell displays the success stream by default). Redirection now captures the complete pasteable block.
+
+**Note on the broader Write-Host situation:** `device.ps1`, `naming.ps1`, and `rename.ps1` also contain `Write-Host` calls (for interactive prompts paired with `Read-Host`), but those were *not* flagged in the same CI run that flagged `Get-Hashes.ps1`. The reason isn't fully understood — possibly an analyzer-version subtlety around `Write-Host` inside vs outside functions, possibly something else. Those usages are deliberate (the calls write to the user's terminal, not to a stream that downstream callers might capture) and the right fix if they ever do trip the linter is *not* the same as the one applied here — it would be either a per-function `[Diagnostics.CodeAnalysis.SuppressMessageAttribute]` or a project-level `PSScriptAnalyzerSettings.psd1` excluding the rule. Left as-is for now; revisit only if a real failure surfaces.
+
+---
+
+### BUG-008 · Pester invocation used incompatible parameter sets — `test` job had never actually run
+
+**Severity:** Medium — the `test` job had never executed since CI was added in v3.0.0  
+**Status:** ✅ Resolved (2026-05-01) — released in v3.0.1  
+**Location:** `.github/workflows/ci.yml → test` job, "Run Pester" step
+
+**Was:** The Pester invocation combined `-Configuration` and `-PassThru`:
+
+```powershell
+$result = Invoke-Pester -Configuration $cfg -PassThru
+```
+
+In Pester v5 these belong to **different parameter sets** and cannot be combined. The `Configuration` parameter set requires every runtime option (including `PassThru`) to be set on the configuration object. PowerShell rejected the call before any test ran:
+
+```
+Invoke-Pester: Parameter set cannot be resolved using the specified named
+parameters. One or more parameters issued cannot be used together or an
+insufficient number of parameters were provided.
+```
+
+**Why this stayed hidden:** The bug had been latent since CI was added in v3.0.0. Two earlier failures masked it:
+
+1. BUG-006 had `placeholder` failing for the wrong reason on every branch, but `continue-on-error: true` on `main` made it look green on the canonical branch.
+2. BUG-007 had `lint` failing on `PSAvoidUsingWriteHost` warnings.
+
+Because the `test` job declares `needs: lint`, while lint was failing the `test` job was being **skipped**, not failing. Skipped jobs don't show as red — the workflow chain looked broken-but-explained for an unrelated reason rather than surfacing this bug. As soon as lint was fixed (BUG-007), the `test` job ran for the first time and immediately surfaced this issue.
+
+**Resolution:** `PassThru` moved onto the configuration object:
+
+```powershell
+$cfg.Run.PassThru = $true
+$result = Invoke-Pester -Configuration $cfg
+```
+
+Inline comment added next to the call documenting the parameter-set rule so the next person to touch this code doesn't reintroduce the mistake.
+
+**Meta-lesson — `needs:` chains in CI hide downstream bugs:** Across BUG-006, BUG-007, and BUG-008, three latent bugs were chained behind two layers of "looks fine but isn't actually running" — `continue-on-error` on `main`, then `needs: lint` skipping the test job. Each fix surfaced the next failure. Takeaway: when adding or fixing CI, run each job in isolation at least once. A green check on a workflow run does not mean every job inside it actually executed; jobs can be skipped or `continue-on-error`-swallowed and look identical to a healthy run from the summary view. Worth glancing at the run's individual job statuses, not just the workflow result.
 
 ---
 
@@ -320,8 +378,8 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - Param additions for BUG-001 deferred to v3.1
 
 ### `tools/Get-Hashes.ps1`
-- Works correctly; no changes needed
 - The CI `manifest` job (OQ-005) performs equivalent verification automatically on every PR — no longer a manual-only step
+- ✅ `Write-Host` calls replaced with bare-string expressions to clear `PSAvoidUsingWriteHost` warnings; also fixes a latent redirection bug where the framing was lost when the script was piped to a file (BUG-007, fixed 2026-05-01)
 
 ### `tests/Hostname-Rename.Tests.ps1` *(new in v3)*
 - Pester v5 test suite covering all pure-logic functions: `New-DeviceName`, `New-UserDeviceName`, `Get-SerialLast4` cleaning and padding, `Get-UserName` UPN cleaning steps, `Select-NamingMode` switch precedence, `Get-NetworkContext` mapping and fallback, and a full integration check of the 15-character NetBIOS limit across all valid department/type combinations
@@ -334,6 +392,7 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - `placeholder` runs on `ubuntu-latest` (faster, no PS needed for a grep check)
 - ✅ `shell: bash` set on the `placeholder` grep step — required because the workflow-level `pwsh` default would otherwise be inherited (BUG-006, fixed 2026-05-01)
 - ✅ `actions/checkout@v6` and `actions/upload-artifact@v7` — bumped from `@v4` to clear the Node.js 20 deprecation warning. Note that `upload-artifact@v5` was insufficient (still defaulted to Node 20 at runtime); v6 was the first release with Node 24 as the default. (2026-05-01)
+- ✅ Pester invocation uses `$cfg.Run.PassThru = $true` on the config object instead of `-PassThru` as a cmdlet parameter — the two are in mutually exclusive parameter sets in Pester v5 (BUG-008, fixed 2026-05-01)
 
 ### `CONTRIBUTING.md` *(new in v3)*
 - Deployment Workflow (step-by-step, fork and canonical repo)

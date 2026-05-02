@@ -19,23 +19,13 @@ Automates Windows device naming based on:
 
 ```
 Hostname-rename/
-├── launcher.ps1                    # Entry point — fetches, verifies, and runs everything
-├── network.ps1                     # Gateway map and network context resolution
-├── device.ps1                      # Device type detection, department, and serial number
-├── naming.ps1                      # Naming mode selection and name construction
-├── rename.ps1                      # Rename-DeviceSmart orchestrator
-├── PSScriptAnalyzerSettings.psd1   # Lint rule configuration (CI-only)
-├── README.md                       # This file
-├── CHANGELOG.md                    # Version history
-├── CONTRIBUTING.md                 # Deployment workflow and contributor guide
-├── DECISIONS.md                    # Architecture decisions and bug log
-├── tools/
-│   └── Get-Hashes.ps1              # Local helper — regenerates manifest hashes
-├── tests/
-│   └── Hostname-Rename.Tests.ps1   # Pester v5 unit tests
-└── .github/
-    └── workflows/
-        └── ci.yml                  # Lint + test + manifest + placeholder CI pipeline
+├── launcher.ps1        # Entry point — fetches, verifies, and runs everything
+├── network.ps1         # Gateway map and network context resolution
+├── device.ps1          # Device type detection, department, and serial number
+├── naming.ps1          # Naming mode selection and name construction
+├── rename.ps1          # Rename-DeviceSmart orchestrator
+└── tools/
+    └── Get-Hashes.ps1  # Local helper — regenerates manifest hashes
 ```
 
 ---

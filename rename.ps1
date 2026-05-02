@@ -47,12 +47,12 @@ function Rename-DeviceSmart {
     $mode = Select-NamingMode -Folder:$Folder -Gateway:$Gateway -NonInteractive:$NonInteractive
 
     if ($mode -eq "User") {
-        # -- User mode: {WH}{LOC}-{Name} --------------------------------------
+        # ── User mode: {WH}{LOC}-{Name} ──────────────────────────────────────
         $userName = Get-UserName -NonInteractive:$NonInteractive
         $newName  = New-UserDeviceName -WH $ctx.WH -LOC $ctx.LOC -Name $userName
 
     } else {
-        # -- Gateway mode: {ORG}{WH}{LOC}-{DEPT}{TYPE}-{SERIAL} ---------------
+        # ── Gateway mode: {ORG}{WH}{LOC}-{DEPT}{TYPE}-{SERIAL} ───────────────
         $dept   = Get-Department -NonInteractive:$NonInteractive
         $type   = Get-DeviceType -NonInteractive:$NonInteractive
         $serial = Get-SerialLast4

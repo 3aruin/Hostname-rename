@@ -9,6 +9,22 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Planned — v3.1
+- `-FolderPath [string]` parameter — custom profile search path for User mode
+- `-Username [string]` parameter — partial username matching in User mode
+- `PB` device type — Pizza Box / low-profile rack unit via `Win32_SystemEnclosure.ChassisTypes`
+- `SupportsShouldProcess` / `-WhatIf` support in `Rename-DeviceSmart` (OQ-002)
+- Optional logging scaffold — `Write-Log` wrapper to UNC path or local temp (OQ-001)
+
+---
+
+## [3.0.1] — 2026-05-02
+
+CI hygiene patch release. No runtime module changes — all fixes are in the GitHub
+Actions workflow, the manifest helper script, and supporting documentation. Three
+latent bugs in the v3.0.0 CI pipeline surfaced sequentially as each fix unblocked
+the next failure (see DECISIONS.md → BUG-008 "Meta-lesson" for the chain).
+
 ### Fixed
 
 - **BUG-006** · `.github/workflows/ci.yml` — `placeholder` job step now sets
@@ -22,6 +38,28 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   was added. Fixed by overriding `shell: bash` on that single step; the global
   `pwsh` default is retained for the three Windows-based jobs that need it.
 
+- **BUG-007** · `tools/Get-Hashes.ps1` — eight `Write-Host` calls (the manifest
+  block header and "Next steps" footer) replaced with bare-string expressions to
+  clear `PSAvoidUsingWriteHost` warnings from the `lint` CI job. As a side
+  benefit, this fixes a latent redirection bug: the script was previously
+  inconsistent — the framing went through `Write-Host` while the actual hash
+  lines went to the success stream — so `.\tools\Get-Hashes.ps1 > manifest.txt`
+  silently dropped the framing and captured only the hash lines. With everything
+  on the success stream now, redirection captures the complete pasteable block.
+  Console behaviour for interactive runs is unchanged.
+
+- **BUG-008** · `.github/workflows/ci.yml` — `test` job's Pester invocation now
+  sets `$cfg.Run.PassThru = $true` on the configuration object and calls
+  `Invoke-Pester -Configuration $cfg` without `-PassThru`. In Pester v5,
+  `-Configuration` and `-PassThru` belong to mutually exclusive parameter sets;
+  combining them fails parameter-set resolution before any test runs
+  (`Parameter set cannot be resolved using the specified named parameters`).
+  The bug had been latent since CI was added in v3.0.0 — the `test` job
+  declares `needs: lint`, so while `lint` was failing under BUG-007 the `test`
+  job was being **skipped** rather than failing, and the CI looked
+  broken-but-explained for an unrelated reason. Surfaced as soon as lint was
+  fixed and `test` ran for the first time.
+
 ### Changed
 
 - **`.github/workflows/ci.yml`** — bumped `actions/checkout@v4` → `@v6`
@@ -33,13 +71,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   to Node 20 at runtime; v6 was the first release where Node 24 is the default,
   v7 is the current latest. Both new versions require Actions Runner v2.327.1+,
   which `windows-latest` and `ubuntu-latest` provide automatically.
-
-### Planned — v3.1
-- `-FolderPath [string]` parameter — custom profile search path for User mode
-- `-Username [string]` parameter — partial username matching in User mode
-- `PB` device type — Pizza Box / low-profile rack unit via `Win32_SystemEnclosure.ChassisTypes`
-- `SupportsShouldProcess` / `-WhatIf` support in `Rename-DeviceSmart` (OQ-002)
-- Optional logging scaffold — `Write-Log` wrapper to UNC path or local temp (OQ-001)
 
 ---
 
@@ -146,5 +177,6 @@ forwarding, parallel CIM queries) with the following known issues — all resolv
 
 ---
 
-[Unreleased]: https://github.com/3aruin/Hostname-rename/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/3aruin/Hostname-rename/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/3aruin/Hostname-rename/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/3aruin/Hostname-rename/releases/tag/v3.0.0

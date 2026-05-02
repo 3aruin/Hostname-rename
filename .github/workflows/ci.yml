@@ -73,12 +73,15 @@ jobs:
         run: |
           $cfg = New-PesterConfiguration
           $cfg.Run.Path       = "./tests"
+          $cfg.Run.PassThru   = $true        # Must be set on the config — see note below
           $cfg.Output.Verbosity = "Detailed"
           $cfg.TestResult.Enabled    = $true
           $cfg.TestResult.OutputPath = "test-results.xml"
           $cfg.TestResult.OutputFormat = "NUnitXml"
 
-          $result = Invoke-Pester -Configuration $cfg -PassThru
+          # Pester v5: -Configuration and -PassThru are in different parameter sets
+          # and cannot be combined. PassThru goes on the config object instead.
+          $result = Invoke-Pester -Configuration $cfg
 
           if ($result.FailedCount -gt 0) {
               Write-Error "$($result.FailedCount) Pester test(s) failed."

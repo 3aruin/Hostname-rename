@@ -32,7 +32,7 @@ jobs:
         ps-version: ["5.1", "latest"]   # 5.1 = Windows PowerShell, latest = PS 7.x
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Install PSScriptAnalyzer
         shell: pwsh
@@ -45,9 +45,7 @@ jobs:
         run: |
           $files  = Get-ChildItem -Path . -Filter "*.ps1" -Recurse
           $issues = $files | ForEach-Object {
-              Invoke-ScriptAnalyzer -Path $_.FullName `
-                                    -Settings ./PSScriptAnalyzerSettings.psd1 `
-                                    -Severity Error,Warning
+              Invoke-ScriptAnalyzer -Path $_.FullName -Severity Error,Warning
           }
 
           if ($issues) {
@@ -64,7 +62,7 @@ jobs:
     needs: lint
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Install Pester
         run: |
@@ -73,20 +71,14 @@ jobs:
 
       - name: Run Pester
         run: |
-          # Pester v5 has two mutually exclusive parameter sets:
-          #   Simple    -- accepts -Path, -PassThru, etc. as direct parameters
-          #   Advanced  -- accepts -Configuration only
-          # Mixing them throws "Parameter set cannot be resolved". When using
-          # -Configuration, PassThru must be set on the config object instead.
           $cfg = New-PesterConfiguration
-          $cfg.Run.Path                = "./tests"
-          $cfg.Run.PassThru            = $true
-          $cfg.Output.Verbosity        = "Detailed"
-          $cfg.TestResult.Enabled      = $true
-          $cfg.TestResult.OutputPath   = "test-results.xml"
+          $cfg.Run.Path       = "./tests"
+          $cfg.Output.Verbosity = "Detailed"
+          $cfg.TestResult.Enabled    = $true
+          $cfg.TestResult.OutputPath = "test-results.xml"
           $cfg.TestResult.OutputFormat = "NUnitXml"
 
-          $result = Invoke-Pester -Configuration $cfg
+          $result = Invoke-Pester -Configuration $cfg -PassThru
 
           if ($result.FailedCount -gt 0) {
               Write-Error "$($result.FailedCount) Pester test(s) failed."
@@ -95,7 +87,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: pester-results
           path: test-results.xml
@@ -107,7 +99,7 @@ jobs:
     needs: lint
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Verify $MANIFEST hashes match module files
         run: |
@@ -164,10 +156,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Fail if REPLACE_WITH_COMMIT_SHA is present in launcher.ps1
-        # Override the workflow-wide pwsh default -- this step is Bash syntax.
+        # Override the global pwsh default — this step is a bash one-liner
+        # running on ubuntu-latest. Without this, pwsh tries to parse the
+        # `if grep ...; then` block as a PowerShell if-statement and fails.
         shell: bash
         run: |
           if grep -q "REPLACE_WITH_COMMIT_SHA" launcher.ps1; then
@@ -178,7 +172,7 @@ jobs:
             echo "before merging. See README.md -> Deployment Workflow."
             exit 1
           fi
-          echo "No placeholder found -- launcher.ps1 is pinned to a real SHA."
+          echo "No placeholder found — launcher.ps1 is pinned to a real SHA."
         # Allow the check to be skipped on the main branch when intentionally
         # keeping the template in a default state (e.g. the canonical repo HEAD).
         # Remove this 'continue-on-error' if you want hard enforcement everywhere.

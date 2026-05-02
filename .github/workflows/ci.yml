@@ -167,6 +167,8 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Fail if REPLACE_WITH_COMMIT_SHA is present in launcher.ps1
+        # Override the workflow-wide pwsh default -- this step is Bash syntax.
+        shell: bash
         run: |
           if grep -q "REPLACE_WITH_COMMIT_SHA" launcher.ps1; then
             echo "::error file=launcher.ps1::COMMIT_SHA placeholder not replaced."
@@ -176,7 +178,7 @@ jobs:
             echo "before merging. See README.md -> Deployment Workflow."
             exit 1
           fi
-          echo "No placeholder found — launcher.ps1 is pinned to a real SHA."
+          echo "No placeholder found -- launcher.ps1 is pinned to a real SHA."
         # Allow the check to be skipped on the main branch when intentionally
         # keeping the template in a default state (e.g. the canonical repo HEAD).
         # Remove this 'continue-on-error' if you want hard enforcement everywhere.

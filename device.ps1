@@ -45,6 +45,8 @@ function Get-DeviceType {
         All three CIM jobs are captured into $jobs before the try block so the
         finally clause can always clean them up, even if a query throws mid-flight.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
+        Justification = 'Interactive prompt header — must write to host so output is not captured downstream when paired with Read-Host')]
     param (
         [switch]$NonInteractive
     )
@@ -121,6 +123,8 @@ function Get-UserName {
           4. Truncate to 11 characters
              (maximum that fits in {WH}{LOC}-{NAME} within the 15-char limit)
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
+        Justification = 'Interactive numbered profile list — must write to host so output is not captured downstream when paired with Read-Host')]
     param (
         [switch]$NonInteractive
     )

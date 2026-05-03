@@ -3,7 +3,7 @@
 **Project:** Hostname-Rename  
 **License:** MIT © 2026 Simms  
 **Target:** v3 — clean, open GitHub release  
-**Latest release:** v3.0.1 (2026-05-02) — CI hygiene patch (BUG-006, BUG-007, BUG-008, Node 24 action bumps)  
+**Latest release:** v3.0.1 (2026-05-02) — CI hygiene patch (BUG-006, BUG-007, BUG-008, BUG-009, Node 24 action bumps)  
 **Log started:** 2026-04-28  
 
 ---
@@ -270,6 +270,34 @@ Inline comment added next to the call documenting the parameter-set rule so the 
 
 ---
 
+### BUG-009 · Lint warnings exposed once analyzer could scan past `Get-Hashes.ps1`
+
+**Severity:** Medium — 27 analyzer warnings, all blocked the `lint` job  
+**Status:** ✅ Resolved (2026-05-02) — released in v3.0.1  
+**Location:** `device.ps1`, `naming.ps1`, `rename.ps1`, `network.ps1`, `tests/Hostname-Rename.Tests.ps1`
+
+**Was:** Once `Get-Hashes.ps1` was cleaned (BUG-007), the `lint` job got further through the codebase and surfaced 27 warnings across four rule categories. Notably, BUG-007's own DECISIONS note had said *"the reason isn't fully understood"* about why `device.ps1`/`naming.ps1`/`rename.ps1` weren't being flagged in the BUG-007 run. The reason now appears to be **file ordering**: `Get-ChildItem -Path . -Filter "*.ps1" -Recurse` returned `Get-Hashes.ps1` first or its 8 errors caused early termination; once it was clean, the analyzer reached the rest. That's a guess rather than a confirmed mechanism, but the practical outcome is clear — fixing one set of files exposed the next.
+
+The 27 warnings broke down into four categories:
+
+**Category 1 — `PSAvoidUsingWriteHost` (9 occurrences):** All in interactive prompts paired with `Read-Host`. `Write-Host` is the *correct* call here; downstream callers must not capture prompt text. Resolution: per-function `[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = '...')]` on `Get-DeviceType`, `Get-UserName` (device.ps1), `Select-NamingMode` (naming.ps1), and `Rename-DeviceSmart` (rename.ps1). The justification string explains the interactive-prompt rationale at each site.
+
+**Category 2 — `PSUseShouldProcessForStateChangingFunctions` (2 occurrences):** Flagged `New-DeviceName` and `New-UserDeviceName` in `naming.ps1`. Both are pure functions: take parameters, build a string, return it. The verb `New-` is correct per `Get-Verb` (it produces a new value). The rule is heuristic-based — it flags any verb in the "create/delete/modify" category — and produces a false positive here. Resolution: per-function suppression with justification.
+
+Important: this same rule will *correctly* fire against `Rename-DeviceSmart` once OQ-002 (`SupportsShouldProcess`/`-WhatIf`) is implemented in v3.1, because that function genuinely changes system state. The suppression was *not* applied to `Rename-DeviceSmart` — letting the warning surface when OQ-002 work begins is the desired behaviour.
+
+**Category 3 — `PSUseBOMForUnicodeEncodedFile` (3 occurrences):** Flagged `network.ps1`, `rename.ps1`, and `tests/Hostname-Rename.Tests.ps1`. All three contain non-ASCII characters (em dashes, smart quotes, box-drawing dividers) but had no UTF-8 byte-order mark. Real bug: Windows PowerShell 5.1 reads BOM-less files as Latin-1 by default — running these files on a fresh Windows 5.1 host would garble the non-ASCII output. Resolution: re-saved all three as UTF-8 with BOM (3 bytes `EF BB BF` prepended). Not a suppression — an actual fix.
+
+**Category 4 — `PSUseDeclaredVarsMoreThanAssignments` (1 occurrence):** Flagged `$clean` in `tests/Hostname-Rename.Tests.ps1` line 157. False positive: the variable is declared in `BeforeAll` and used in 8 `It` blocks below, but PowerShell static analysis can't see across Pester's scope boundary. Resolution: promoted to `$script:clean` and updated all 8 call sites. This isn't just a workaround — it's also semantically more correct, since Pester's `BeforeAll` runs in a separate scope from `It` blocks and `$script:` is the explicit way to share state across both.
+
+**Decision: per-function suppressions, not a project settings file.** A `PSScriptAnalyzerSettings.psd1` excluding the two affected rules project-wide would have been a one-file change instead of nine attribute additions. Rejected for two reasons: (1) the suppressions document *why* each rule is exempt at the call site, where a future maintainer can see them; a settings file disables rules globally with no co-located rationale. (2) New `Write-Host` or `New-`-verb code added later would silently skip linting under a settings-file approach; per-function suppressions only exempt the specific functions where the exemption is justified. The settings file is the right tool when there's a project-wide convention to enforce; for narrow, justified exceptions, attributes are better.
+
+**Manifest impact:** the BOM addition to `network.ps1` and `rename.ps1` changed file content. Anyone with a populated `$MANIFEST` in `launcher.ps1` will need to regenerate hashes via `tools/Get-Hashes.ps1` before deploying. Canonical-repo `$MANIFEST` uses `REPLACE_WITH_HASH` placeholders so the CI `manifest` job already exits cleanly without performing a check.
+
+**Closes BUG-007's open question:** BUG-007's "Note on the broader Write-Host situation" said the right fix in the hypothetical case of a real failure would be either per-function suppression or a project settings file, and left the choice for "if a real failure surfaces." A real failure surfaced. The choice has been made, in writing, for next time.
+
+---
+
 ## Open Questions for v3
 
 ### OQ-001 · Should logging be implemented?
@@ -362,19 +390,25 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - ✅ `$FALLBACK_CONTEXT` variable added — replaces hardcoded `RS` fallback (BUG-002)
 - ✅ `Get-NetworkContext` updated — throws in NonInteractive, warns prominently in interactive (BUG-002)
 - ✅ Null/empty gateway guard added to `Get-NetworkContext` — throws with a clear "no gateway detected" message before the map lookup (BUG-005)
+- ✅ Re-saved as UTF-8 with BOM — file contains non-ASCII characters (em dashes, smart quotes) and was being read as Latin-1 by Windows PowerShell 5.1 (BUG-009, fixed 2026-05-02)
 
 ### `device.ps1`
 - ✅ CIM job cleanup fixed — `$jobs` array + `finally` block (BUG-003; fix confirmed and applied in pre-launch audit 2026-04-30)
+- ✅ `[SuppressMessageAttribute('PSAvoidUsingWriteHost', ...)]` added to `Get-DeviceType` and `Get-UserName` — both contain interactive prompts paired with `Read-Host` where Write-Host is correct (BUG-009, fixed 2026-05-02)
 - BUG-001 (`-FolderPath` / `-Username`) deferred to v3.1 — `Get-UserName` unchanged for now
 - `$script:VALID_DEPARTMENTS` and `$script:DEVICE_TYPES` documented in README as extension points
 
 ### `naming.ps1`
-- No bugs found; logic verified correct by pre-launch audit
+- No runtime bugs found; logic verified correct by pre-launch audit
+- ✅ `[SuppressMessageAttribute('PSAvoidUsingWriteHost', ...)]` added to `Select-NamingMode` (interactive mode-selection prompt) (BUG-009, fixed 2026-05-02)
+- ✅ `[SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', ...)]` added to `New-DeviceName` and `New-UserDeviceName` — false positives, both are pure string-builder functions (BUG-009, fixed 2026-05-02)
 - `New-DeviceName`, `New-UserDeviceName`, and `Select-NamingMode` all covered by Pester tests
 
 ### `rename.ps1`
 - ✅ `-NonInteractive:$NonInteractive` forwarded to `Get-NetworkContext` (BUG-002)
-- `Rename-DeviceSmart` still needs `SupportsShouldProcess` (OQ-002, checklist item 5) — deferred to v3.1
+- ✅ `[SuppressMessageAttribute('PSAvoidUsingWriteHost', ...)]` added to `Rename-DeviceSmart` (interactive proposed-name confirmation) (BUG-009, fixed 2026-05-02)
+- ✅ Re-saved as UTF-8 with BOM — file contains non-ASCII characters and was being read as Latin-1 by Windows PowerShell 5.1 (BUG-009, fixed 2026-05-02)
+- `Rename-DeviceSmart` still needs `SupportsShouldProcess` (OQ-002, checklist item 5) — deferred to v3.1. The `PSUseShouldProcessForStateChangingFunctions` rule is *deliberately not suppressed* on this function so the warning surfaces when OQ-002 work begins.
 - Param additions for BUG-001 deferred to v3.1
 
 ### `tools/Get-Hashes.ps1`
@@ -385,6 +419,8 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - Pester v5 test suite covering all pure-logic functions: `New-DeviceName`, `New-UserDeviceName`, `Get-SerialLast4` cleaning and padding, `Get-UserName` UPN cleaning steps, `Select-NamingMode` switch precedence, `Get-NetworkContext` mapping and fallback, and a full integration check of the 15-character NetBIOS limit across all valid department/type combinations
 - No WMI or OS dependency — all tests run in CI without a real Windows device
 - Run locally: `Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed`
+- ✅ `$clean` scriptblock promoted to `$script:clean` to clear `PSUseDeclaredVarsMoreThanAssignments` (false positive caused by Pester's BeforeAll → It scope boundary). Also semantically more correct. (BUG-009, fixed 2026-05-02)
+- ✅ Re-saved as UTF-8 with BOM — file contains non-ASCII characters and was being read as Latin-1 by Windows PowerShell 5.1 (BUG-009, fixed 2026-05-02)
 
 ### `.github/workflows/ci.yml` *(new in v3)*
 - Four jobs: `lint`, `test`, `manifest`, `placeholder` — see OQ-005 for detail

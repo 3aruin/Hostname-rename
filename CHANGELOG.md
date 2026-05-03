@@ -20,10 +20,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [3.0.1] — 2026-05-02
 
-CI hygiene patch release. No runtime module changes — all fixes are in the GitHub
-Actions workflow, the manifest helper script, and supporting documentation. Three
-latent bugs in the v3.0.0 CI pipeline surfaced sequentially as each fix unblocked
-the next failure (see DECISIONS.md → BUG-008 "Meta-lesson" for the chain).
+CI hygiene patch release. No runtime behaviour changes — all fixes are linter
+compliance, encoding correctness, and supporting documentation. Four latent
+issues in the v3.0.0 CI pipeline surfaced sequentially as each fix unblocked
+the next failure (see DECISIONS.md → BUG-008 "Meta-lesson" for the chain). One
+real encoding bug (BUG-009 BOM) was also identified and fixed in the process.
 
 ### Fixed
 
@@ -59,6 +60,45 @@ the next failure (see DECISIONS.md → BUG-008 "Meta-lesson" for the chain).
   job was being **skipped** rather than failing, and the CI looked
   broken-but-explained for an unrelated reason. Surfaced as soon as lint was
   fixed and `test` ran for the first time.
+
+- **BUG-009** · Multiple files — analyzer warnings cleared without compromising
+  intent. The `lint` job, finally able to scan the full codebase after BUG-007
+  unblocked it, surfaced four categories of warning:
+  - `PSAvoidUsingWriteHost` — flagged 9 calls in `device.ps1`, `naming.ps1`, and
+    `rename.ps1`. All are interactive prompts paired with `Read-Host` and
+    correctly target the host stream rather than success — capturing them
+    downstream would defeat the purpose. Suppressed per-function via
+    `[Diagnostics.CodeAnalysis.SuppressMessageAttribute]` with justifications
+    documented inline. No project-level settings file was added (see DECISIONS.md
+    BUG-009 rationale).
+  - `PSUseShouldProcessForStateChangingFunctions` — flagged `New-DeviceName` and
+    `New-UserDeviceName` in `naming.ps1`. False positive: both are pure
+    string-builder functions that take parameters and return a string; the verb
+    `New-` is correct (the function produces a new value). Suppressed per-function
+    with justification. The same rule will *correctly* fire against
+    `Rename-DeviceSmart` once OQ-002 (`SupportsShouldProcess`/`-WhatIf`) is
+    implemented in v3.1; that suppression is deliberately *not* applied so the
+    warning surfaces when relevant.
+  - `PSUseBOMForUnicodeEncodedFile` — flagged `network.ps1`, `rename.ps1`, and
+    `tests/Hostname-Rename.Tests.ps1`. Real fix, not suppression: all three files
+    contain non-ASCII characters (em dashes, fancy quotes, box-drawing dividers)
+    but lacked a UTF-8 byte-order mark. Windows PowerShell 5.1 reads BOM-less
+    files as Latin-1 by default and would garble those characters. All three
+    files re-saved as UTF-8 with BOM (bytes `EF BB BF` prepended).
+  - `PSUseDeclaredVarsMoreThanAssignments` — flagged `$clean` in
+    `tests/Hostname-Rename.Tests.ps1` line 157. False positive caused by
+    cross-scope reference in Pester (variable declared in `BeforeAll`, used in
+    `It` blocks). Fixed properly by promoting the variable to `$script:` scope,
+    which is also semantically more correct — Pester's scope inheritance happens
+    to make the original code work, but `$script:` makes the cross-scope intent
+    explicit. All 8 `It` block call sites updated.
+
+  Note for anyone who has populated `$MANIFEST` in `launcher.ps1` with real
+  hashes: `network.ps1` and `rename.ps1` content changed (BOM bytes added), so
+  manifest hashes for those two files need to be regenerated via
+  `tools/Get-Hashes.ps1` before re-deployment. The canonical repo's `$MANIFEST`
+  uses `REPLACE_WITH_HASH` placeholders, so the CI `manifest` job exits cleanly
+  with no check performed.
 
 ### Changed
 

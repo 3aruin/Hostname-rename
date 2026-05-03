@@ -1,4 +1,4 @@
-# rename.ps1
+﻿# rename.ps1
 # Orchestrator -- calls functions from network.ps1, device.ps1, and naming.ps1
 # in the correct order to produce and apply a device name.
 
@@ -32,6 +32,8 @@ function Rename-DeviceSmart {
         Rename-DeviceSmart -NonInteractive -Gateway
     #>
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
+        Justification = 'Interactive confirmation prompt — proposed name and status messages must reach the user terminal directly')]
     param (
         [switch]$Folder,
         [switch]$Gateway,

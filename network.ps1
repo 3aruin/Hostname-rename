@@ -1,4 +1,4 @@
-# network.ps1
+﻿# network.ps1
 # Handles: gateway detection and network context resolution
 
 # -- Gateway Map --------------------------------------------------------------

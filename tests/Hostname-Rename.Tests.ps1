@@ -1,4 +1,4 @@
-# tests/Hostname-Rename.Tests.ps1
+﻿# tests/Hostname-Rename.Tests.ps1
 #
 # Pester v5 unit tests for Hostname-Rename.
 # Covers all pure-logic functions (no WMI / OS calls required).
@@ -152,9 +152,13 @@ Describe "Get-SerialLast4" {
 # ─────────────────────────────────────────────────────────────────────────────
 Describe "Get-UserName name cleaning" {
 
-    # Expose the cleaning logic via a scriptblock to test without hitting C:\Users
+    # Expose the cleaning logic via a scriptblock to test without hitting C:\Users.
+    # $script: scope is required because BeforeAll runs in a separate scope from
+    # the It blocks below — without it, the analyzer also flags the variable as
+    # assigned-but-never-used (PSUseDeclaredVarsMoreThanAssignments), which is a
+    # false positive caused by the cross-scope reference in Pester.
     BeforeAll {
-        $clean = {
+        $script:clean = {
             param($selected)
             $c = $selected
             foreach ($sep in '@', '_') {
@@ -168,36 +172,36 @@ Describe "Get-UserName name cleaning" {
     }
 
     It "Strips @ suffix (standard UPN)" {
-        & $clean "jane.doe@contoso.com" | Should -Be "janedoe"
+        & $script:clean "jane.doe@contoso.com" | Should -Be "janedoe"
     }
 
     It "Strips _ suffix (Entra joined UPN style)" {
-        & $clean "JaneDoe_contoso_com" | Should -Be "JaneDoe"
+        & $script:clean "JaneDoe_contoso_com" | Should -Be "JaneDoe"
     }
 
     It "Leaves plain names unchanged" {
-        & $clean "JohnSmith" | Should -Be "JohnSmith"
+        & $script:clean "JohnSmith" | Should -Be "JohnSmith"
     }
 
     It "Removes dots in prefix (UPN style: first.last)" {
-        & $clean "john.smith" | Should -Be "johnsmith"
+        & $script:clean "john.smith" | Should -Be "johnsmith"
     }
 
     It "Truncates to 11 characters" {
-        & $clean "VeryLongNameHere" | Should -Be "VeryLongNam"
+        & $script:clean "VeryLongNameHere" | Should -Be "VeryLongNam"
     }
 
     It "Result is never longer than 11 characters" {
-        (& $clean "AVeryVeryVeryLongFolderName").Length | Should -BeLessOrEqual 11
+        (& $script:clean "AVeryVeryVeryLongFolderName").Length | Should -BeLessOrEqual 11
     }
 
     It "Processes @ before _ — strips at @ first, then _ in remainder" {
         # user_name@domain.com  → strip @  → user_name → strip _  → user
-        & $clean "user_name@domain.com" | Should -Be "user"
+        & $script:clean "user_name@domain.com" | Should -Be "user"
     }
 
     It "Throws when cleaned result is empty" {
-        { & $clean "___" } | Should -Throw
+        { & $script:clean "___" } | Should -Throw
     }
 }
 

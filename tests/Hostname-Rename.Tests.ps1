@@ -97,11 +97,11 @@ Describe "Get-SerialLast4" {
 
     Context "Serial longer than 4 chars" {
         It "Returns the last 4 chars of a cleaned 8-char serial" {
-            # Cleaned: VMWA3F9B2C1 → last 4: B2C1
-            InModuleScope -Scriptblock {
-                # Mock CIM since we only want to test the logic
-            }
-            # Test cleaning + last-4 extraction via a helper wrapper
+            # Cleaned: VMWA3F9B2C1 -> last 4: B2C1
+            # Test cleaning + last-4 extraction via a helper wrapper.
+            # TODO (v3.1): refactor Get-SerialLast4 so the cleaning logic is in a
+            # standalone helper function callable without WMI -- then these
+            # tests can exercise the real implementation rather than a copy.
             $fn = {
                 param($s)
                 $clean = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
@@ -128,23 +128,30 @@ Describe "Get-SerialLast4" {
         }
     }
 
-    Context "Serial shorter than 4 chars — pad with leading zeros" {
-        $fn = { param($s)
-            $c = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
-            if ($c.Length -ge 4) { return $c.Substring($c.Length - 4) }
-            return $c.PadLeft(4, '0') }
+    Context "Serial shorter than 4 chars -- pad with leading zeros" {
+        # $script: scope is required because BeforeAll runs in a separate scope
+        # from the It blocks below -- without it, $fn is gone by the time the
+        # It blocks try to invoke it. Same pattern as the Get-UserName fix.
+        BeforeAll {
+            $script:fn = {
+                param($s)
+                $c = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
+                if ($c.Length -ge 4) { return $c.Substring($c.Length - 4) }
+                return $c.PadLeft(4, '0')
+            }
+        }
 
-        It "3 chars → left-pads to 4" {
-            & $fn "ABC"   | Should -Be "0ABC"
+        It "3 chars -- left-pads to 4" {
+            & $script:fn "ABC"   | Should -Be "0ABC"
         }
-        It "1 char → left-pads to 4" {
-            & $fn "X"     | Should -Be "000X"
+        It "1 char -- left-pads to 4" {
+            & $script:fn "X"     | Should -Be "000X"
         }
-        It "Empty string → four zeros" {
-            & $fn ""      | Should -Be "0000"
+        It "Empty string -- four zeros" {
+            & $script:fn ""      | Should -Be "0000"
         }
-        It "All special chars → four zeros" {
-            & $fn "---"   | Should -Be "0000"
+        It "All special chars -- four zeros" {
+            & $script:fn "---"   | Should -Be "0000"
         }
     }
 }

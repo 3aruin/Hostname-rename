@@ -3,7 +3,7 @@
 **Project:** Hostname-Rename  
 **License:** MIT © 2026 Simms  
 **Target:** v3 — clean, open GitHub release  
-**Latest release:** v3.0.1 (2026-05-02) — CI hygiene patch (BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, Node 24 action bumps)  
+**Latest release:** v3.0.1 (2026-05-02) -- CI hygiene patch (BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, BUG-011, Node 24 action bumps)  
 **Log started:** 2026-04-28  
 
 ---
@@ -322,7 +322,54 @@ Resolution: replaced 2 em dashes in `device.ps1` and 3 in `naming.ps1` with `--`
 - The rule trips silently — you don't notice until the linter runs.
 - Worth adding to CONTRIBUTING.md style guidance in a future release.
 
-**The BUG-008 meta-lesson keeps applying:** the cascade pattern (fix one CI thing, surface the next) has now happened five times in this release (BUG-006 → 007 → 008 → 009 → 010). Each fix legitimately needed to be made; none were avoidable. But the count is a sign that the v3.0.0 CI was masking *a lot* — multiple rules across multiple files that had simply never run end-to-end. After v3.0.1, every job in CI runs every file every time, so the rate of these surprises should drop sharply.
+**The BUG-008 meta-lesson keeps applying:** the cascade pattern (fix one CI thing, surface the next) has now happened six times in this release (BUG-006 -> 007 -> 008 -> 009 -> 010 -> 011). Each fix legitimately needed to be made; none were avoidable. But the count is a sign that the v3.0.0 CI was masking *a lot* -- multiple rules across multiple files that had simply never run end-to-end. After v3.0.1, every job in CI runs every file every time, so the rate of these surprises should drop sharply.
+
+---
+
+### BUG-011 · Pester test failures surfaced once the test job actually ran for the first time
+
+**Severity:** Medium -- 5 of 38 tests failing  
+**Status:** Resolved (2026-05-02) -- released in v3.0.1  
+**Location:** `tests/Hostname-Rename.Tests.ps1`
+
+**Was:** With BUG-008 fixed and the lint job clean (after BUG-009 + BUG-010), the test job finally ran end-to-end for the first time since CI was added. 33 of 38 tests passed. The 5 failures fell into two distinct categories, both pre-existing in v3.0.0 but masked by the BUG-008 chain.
+
+**Category 1 -- Orphan `InModuleScope` (1 failure):** Line 99-103 of the test file:
+
+```powershell
+It "Returns the last 4 chars of a cleaned 8-char serial" {
+    # Cleaned: VMWA3F9B2C1 -> last 4: B2C1
+    InModuleScope -Scriptblock {
+        # Mock CIM since we only want to test the logic
+    }
+    ...
+```
+
+`InModuleScope` requires a `-ModuleName` parameter in Pester v5; without it, parameter binding fails. This was leftover scaffolding from an abandoned approach where the author intended to use `InModuleScope` to mock `Get-CimInstance` and test the real `Get-SerialLast4` function. They switched to a helper-scriptblock approach (the `$fn = { ... }` below the `InModuleScope` block) but forgot to delete the orphan call. The block body was just a comment, so it never did anything functional; deleting the entire `InModuleScope -Scriptblock { ... }` call has zero effect on what the test verifies.
+
+**Category 2 -- `$fn` declared at Context scope, used in It scope (4 failures):** The `Context "Serial shorter than 4 chars"` block declared a shared helper:
+
+```powershell
+Context "Serial shorter than 4 chars -- pad with leading zeros" {
+    $fn = { param($s) ... }   # at Context level
+    
+    It "3 chars -- left-pads to 4" {
+        & $fn "ABC" | Should -Be "0ABC"   # FAILS: $fn doesn't exist here
+    }
+    ...
+```
+
+In Pester v5, code at `Context` level executes during *test discovery*; `It` blocks execute during *test run*, in a separate scope. So `$fn` was a discovery-time variable that no longer existed by the time the test bodies tried to invoke it. Same Pester scope rule that caused the BUG-009 `$clean` issue in the `Get-UserName` block.
+
+The "Serial longer than 4 chars" tests right above this block didn't have the issue because each of the three tests in that Context declared its own local `$fn` inside the `It` block (lines 105, 115, 123 of the original). Same code, different scope, different result.
+
+**Resolution:** Wrapped the shared helper in `BeforeAll { $script:fn = { ... } }` and updated all four `It` blocks to call `$script:fn` instead of `$fn`. The `BeforeAll` runs at the right time, the `$script:` scope makes the variable visible across the `BeforeAll` -> `It` boundary. Identical pattern to the BUG-009 fix.
+
+Also took the opportunity to swap the em dashes (`--`) and arrows (`->`) in the test descriptions for ASCII equivalents, consistent with the BUG-010 lesson. The test file still has a BOM (it has other non-ASCII content elsewhere), but reducing the surface of non-ASCII makes future analyzer-rule changes less likely to bite.
+
+**The deferred follow-up worth flagging:** `Get-SerialLast4` tests exercise a *re-implementation* of the cleaning logic via the inline `$fn` scriptblock, not the real function. The real `Get-SerialLast4` calls `Get-CimInstance Win32_BIOS`, which can't run in CI without a real Windows device. So if a contributor breaks the cleaning logic in `device.ps1` tomorrow -- say, by changing `[^A-Za-z0-9]` to `[^A-Za-z]` -- the test would still pass, because the test isn't testing the real function. A `# TODO (v3.1)` comment has been added to the test noting that the right fix is to refactor `Get-SerialLast4` so the cleaning logic lives in a standalone, parameterised helper function (no WMI), and have the tests call that helper directly. This is a real testing improvement but requires a runtime-side change to `device.ps1`, putting it outside v3.0.1's "no runtime behaviour changes" scope.
+
+**Lesson for next time:** When `needs:` chains skip jobs, a green-looking workflow can mask substantial test debt. The BUG-008 chain meant 5/38 tests had been broken since v3.0.0 was released and nobody knew. For v3.1, consider removing or relaxing `needs:` chains once the upstream jobs have stabilised, so test failures aren't gated on lint passing first. (Or, more defensively: have at least one CI job that runs the full Pester suite without the `needs: lint` predicate, so test failures always surface even when lint is unhappy.)
 
 ---
 
@@ -448,10 +495,13 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 
 ### `tests/Hostname-Rename.Tests.ps1` *(new in v3)*
 - Pester v5 test suite covering all pure-logic functions: `New-DeviceName`, `New-UserDeviceName`, `Get-SerialLast4` cleaning and padding, `Get-UserName` UPN cleaning steps, `Select-NamingMode` switch precedence, `Get-NetworkContext` mapping and fallback, and a full integration check of the 15-character NetBIOS limit across all valid department/type combinations
-- No WMI or OS dependency — all tests run in CI without a real Windows device
+- No WMI or OS dependency -- all tests run in CI without a real Windows device
 - Run locally: `Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed`
-- ✅ `$clean` scriptblock promoted to `$script:clean` to clear `PSUseDeclaredVarsMoreThanAssignments` (false positive caused by Pester's BeforeAll → It scope boundary). Also semantically more correct. (BUG-009, fixed 2026-05-02)
-- ✅ Re-saved as UTF-8 with BOM — file contains non-ASCII characters and was being read as Latin-1 by Windows PowerShell 5.1 (BUG-009, fixed 2026-05-02)
+- ✅ `$clean` scriptblock promoted to `$script:clean` to clear `PSUseDeclaredVarsMoreThanAssignments` (false positive caused by Pester's BeforeAll -> It scope boundary). Also semantically more correct. (BUG-009, fixed 2026-05-02)
+- ✅ Re-saved as UTF-8 with BOM -- file contains non-ASCII characters and was being read as Latin-1 by Windows PowerShell 5.1 (BUG-009, fixed 2026-05-02)
+- ✅ Orphan `InModuleScope -Scriptblock { ... }` deleted from the first `Get-SerialLast4` test -- leftover scaffolding that errored in Pester v5 due to missing `-ModuleName`. The block body was a no-op comment. (BUG-011, fixed 2026-05-02)
+- ✅ Shared helper in `Get-SerialLast4 "Serial shorter than 4 chars"` Context wrapped in `BeforeAll { $script:fn = ... }` -- previously declared at Context scope, used in It scope, undefined at runtime. Same Pester v5 cross-scope rule as the BUG-009 `$clean` fix. (BUG-011, fixed 2026-05-02)
+- ⚠️ **Known testing gap:** `Get-SerialLast4` tests exercise a re-implementation of the cleaning logic, not the real function (which depends on `Get-CimInstance Win32_BIOS`). A breakage in `device.ps1` would not be caught. `# TODO (v3.1)` comment added; correct fix is to extract the cleaning logic from `Get-SerialLast4` into a standalone WMI-free helper that tests can call directly.
 
 ### `.github/workflows/ci.yml` *(new in v3)*
 - Four jobs: `lint`, `test`, `manifest`, `placeholder` — see OQ-005 for detail

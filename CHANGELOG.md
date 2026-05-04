@@ -18,15 +18,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [3.0.1] — 2026-05-02
+## [3.0.1] -- 2026-05-02
 
-CI hygiene patch release. No runtime behaviour changes — all fixes are linter
-compliance, encoding correctness, and supporting documentation. Five latent
-issues in the v3.0.0 CI pipeline surfaced sequentially as each fix unblocked
-the next failure (see DECISIONS.md → BUG-008 "Meta-lesson" for the chain). One
-real encoding bug (BUG-009 BOM) was identified and fixed in the process. BUG-010
-also captures a practical lesson about ASCII-only justifications to avoid
-creating BOM cascades.
+CI hygiene patch release. No runtime behaviour changes -- all fixes are linter
+compliance, encoding correctness, test scaffolding, and supporting documentation.
+Six latent issues in the v3.0.0 CI pipeline surfaced sequentially as each fix
+unblocked the next failure (see DECISIONS.md -> BUG-008 "Meta-lesson" for the
+chain). One real encoding bug (BUG-009 BOM) was identified and fixed in the
+process. BUG-010 captures a practical lesson about ASCII-only justifications.
+BUG-011 surfaced once the test job actually ran for the first time since CI
+was added.
 
 ### Fixed
 
@@ -123,6 +124,28 @@ creating BOM cascades.
   (`network.ps1`, `rename.ps1`, the test file) all have non-ASCII content for
   good reasons (warning-block dividers, box-drawing in section headers); those
   stay as-is.
+
+- **BUG-011** · `tests/Hostname-Rename.Tests.ps1` — five Pester test failures
+  cleared. Two distinct issues, both pre-existing in v3.0.0 but masked because
+  the test job had never actually run (BUG-008 chain). (1) The first
+  `Get-SerialLast4` test contained an orphan `InModuleScope -Scriptblock { ... }`
+  call missing the required `-ModuleName` parameter -- leftover scaffolding from
+  an abandoned mocking approach that Pester v5 errors on. The block was a no-op
+  comment anyway; deleted it. (2) The four `Get-SerialLast4` "Serial shorter
+  than 4 chars" tests had `$fn` declared at `Context` level (which runs at
+  discovery time) and used inside `It` blocks (which run later, in a different
+  scope), so `$fn` was undefined at invocation. Same Pester v5 cross-scope issue
+  fixed by BUG-009 in the `Get-UserName` block. Resolution: wrapped the helper
+  in `BeforeAll { $script:fn = ... }` and updated the four call sites to use
+  `$script:fn`. All 38 tests now pass.
+
+  **Known-but-deferred issue:** `Get-SerialLast4` tests exercise a
+  *re-implementation* of the cleaning logic, not the real function (the real
+  function calls `Get-CimInstance Win32_BIOS` which can't run in CI). A breakage
+  in `device.ps1` would not be caught by these tests. A `# TODO (v3.1)` comment
+  has been added noting that `Get-SerialLast4` should be refactored to extract
+  the cleaning logic into a standalone, WMI-free helper that the tests can call
+  directly. Out of scope for v3.0.1's "no runtime behaviour changes" rule.
 
 ### Changed
 

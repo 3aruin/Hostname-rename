@@ -8,6 +8,8 @@
 #   )) -NonInteractive -Gateway
 
 [CmdletBinding()]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseUsingScopeModifierInNewRunspaces', '',
+    Justification = 'False positive on the Start-Job ScriptBlock around line 137. The block uses param($u) plus -ArgumentList $url to pass the URL into the job, which is the idiomatic and preferred pattern. The analyzer cannot see that $u inside the script block is the param, not an outer-scope reference. Switching to $using: would be wrong here.')]
 param (
     [switch]$Folder,
     [switch]$Gateway,

@@ -21,10 +21,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [3.0.1] — 2026-05-02
 
 CI hygiene patch release. No runtime behaviour changes — all fixes are linter
-compliance, encoding correctness, and supporting documentation. Four latent
+compliance, encoding correctness, and supporting documentation. Five latent
 issues in the v3.0.0 CI pipeline surfaced sequentially as each fix unblocked
 the next failure (see DECISIONS.md → BUG-008 "Meta-lesson" for the chain). One
-real encoding bug (BUG-009 BOM) was also identified and fixed in the process.
+real encoding bug (BUG-009 BOM) was identified and fixed in the process. BUG-010
+also captures a practical lesson about ASCII-only justifications to avoid
+creating BOM cascades.
 
 ### Fixed
 
@@ -99,6 +101,28 @@ real encoding bug (BUG-009 BOM) was also identified and fixed in the process.
   `tools/Get-Hashes.ps1` before re-deployment. The canonical repo's `$MANIFEST`
   uses `REPLACE_WITH_HASH` placeholders, so the CI `manifest` job exits cleanly
   with no check performed.
+
+- **BUG-010** · `launcher.ps1` + `device.ps1` + `naming.ps1` — two more analyzer
+  warnings surfaced after BUG-009. (1) `PSUseUsingScopeModifierInNewRunspaces`
+  flagged `$u` on lines 138–139 of `launcher.ps1`, inside a `Start-Job` script
+  block. False positive: the variable IS declared inside the block via
+  `param($u)` and the value is passed in via `-ArgumentList $url`, which is the
+  idiomatic and preferred pattern (switching to `$using:` would be a regression).
+  Resolution: file-level `[SuppressMessageAttribute('PSUseUsingScopeModifierInNewRunspaces', ...)]`
+  on `launcher.ps1`'s top param block with justification. (2)
+  `PSUseBOMForUnicodeEncodedFile` flagged `device.ps1` and `naming.ps1` — both
+  files were ASCII-only in v3.0.0 but the BUG-009 SuppressMessage justification
+  strings I added contained em dashes (U+2014), pushing them into "non-ASCII file
+  needs BOM" territory. Resolution: replaced 2 em dashes in `device.ps1` and 3 in
+  `naming.ps1` with `--`, returning both files to ASCII-only and clearing the
+  warning. **Practical lesson — keep new code ASCII-only unless the file already
+  contains non-ASCII content.** Adding a single Unicode character to an
+  otherwise-ASCII file forces the BOM rule to fire and creates avoidable churn.
+  Comments and justifications should default to plain `--`, regular quotes, and
+  ASCII-only punctuation. The pre-existing files that genuinely need a BOM
+  (`network.ps1`, `rename.ps1`, the test file) all have non-ASCII content for
+  good reasons (warning-block dividers, box-drawing in section headers); those
+  stay as-is.
 
 ### Changed
 

@@ -16,7 +16,7 @@ function Select-NamingMode {
         console input and must not be used here.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
-        Justification = 'Interactive mode-selection prompt — must write to host stream so output is not captured downstream')]
+        Justification = 'Interactive mode-selection prompt -- must write to host stream so output is not captured downstream')]
     param (
         [switch]$Folder,
         [switch]$Gateway,
@@ -67,7 +67,7 @@ function New-DeviceName {
         Throws if even the shortened form exceeds 15 characters.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
-        Justification = 'Pure function — assembles a string from parameters and returns it. Does not change any system state. Verb New- is correct per Get-Verb (it produces a new value).')]
+        Justification = 'Pure function -- assembles a string from parameters and returns it. Does not change any system state. Verb New- is correct per Get-Verb (it produces a new value).')]
     param (
         [string]$ORG,
         [string]$WH,
@@ -101,7 +101,7 @@ function New-UserDeviceName {
         check is applied here as well.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
-        Justification = 'Pure function — assembles a string from parameters and returns it. Does not change any system state.')]
+        Justification = 'Pure function -- assembles a string from parameters and returns it. Does not change any system state.')]
     param (
         [string]$WH,
         [string]$LOC,

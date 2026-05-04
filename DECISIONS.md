@@ -3,7 +3,7 @@
 **Project:** Hostname-Rename  
 **License:** MIT © 2026 Simms  
 **Target:** v3 — clean, open GitHub release  
-**Latest release:** v3.0.1 (2026-05-02) — CI hygiene patch (BUG-006, BUG-007, BUG-008, BUG-009, Node 24 action bumps)  
+**Latest release:** v3.0.1 (2026-05-02) — CI hygiene patch (BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, Node 24 action bumps)  
 **Log started:** 2026-04-28  
 
 ---
@@ -298,6 +298,34 @@ Important: this same rule will *correctly* fire against `Rename-DeviceSmart` onc
 
 ---
 
+### BUG-010 · One false-positive analyzer rule and an ASCII regression caused by BUG-009's own justification strings
+
+**Severity:** Low — 4 warnings, all easily resolved  
+**Status:** ✅ Resolved (2026-05-02) — released in v3.0.1  
+**Location:** `launcher.ps1`, `device.ps1`, `naming.ps1`
+
+**Was:** The CI run after BUG-009 surfaced 4 new analyzer warnings, in two separate categories.
+
+**Category 1 — `PSUseUsingScopeModifierInNewRunspaces` (false positive):** Flagged `$u` on lines 138 and 139 of `launcher.ps1`, inside a `Start-Job -ScriptBlock { ... } -ArgumentList $url` call. The analyzer's heuristic looks for variables referenced inside script blocks and warns when they might need a `$using:` modifier to capture outer-scope state. Here, the `$u` IS declared inside the block — by the `param($u)` on line 138 itself — and the value is passed in via `-ArgumentList $url` on line 140. This is the correct, idiomatic pattern for `Start-Job`; switching to `$using:` would be a regression. The analyzer simply can't tell that `$u` is the param, not an outer-scope reference. There is no outer `$u` (the outer variable is `$url`).
+
+Resolution: file-level `[SuppressMessageAttribute('PSUseUsingScopeModifierInNewRunspaces', '', Justification = ...)]` on `launcher.ps1`'s top-level `param()` block. The justification documents the false positive and explicitly notes that `$using:` would be wrong here, so a future maintainer doesn't "fix" it.
+
+**Category 2 — `PSUseBOMForUnicodeEncodedFile` (a regression I caused):** Flagged `device.ps1` and `naming.ps1`. Both files were pure ASCII in v3.0.0 and didn't need a BOM. The BUG-009 SuppressMessage attributes I added used em dashes (`—`, U+2014) in their `Justification` strings — text like *"Pure function — assembles a string from parameters"*. Em dashes are 3-byte UTF-8 sequences, so introducing them pushed both files from ASCII to non-ASCII territory, triggering the BOM rule.
+
+Resolution: replaced 2 em dashes in `device.ps1` and 3 in `naming.ps1` with `--` (double hyphen). Both files are back to ASCII-only and the BOM rule no longer fires. The justification text reads slightly less elegantly but is functionally identical.
+
+**Why not just add BOM to those files?** It would also have worked, but it would have papered over the regression rather than reverting it. The principle: a v3.0.0 file that was ASCII should stay ASCII unless there's a substantive reason to change. There wasn't here — em dashes were a stylistic preference of mine, not load-bearing.
+
+**Practical lesson — keep new code ASCII-only unless the file already contains non-ASCII content:**
+- Comments, justifications, and prose strings in `.ps1` files should default to plain `--`, regular straight quotes (`'` and `"`), and ASCII-only punctuation.
+- Use Unicode characters only when the file *already* needs a BOM for other reasons (e.g. `network.ps1` has decorative `!!` blocks, `rename.ps1` has box-drawing dividers, the test file has em dashes in test descriptions). Those files have legitimate non-ASCII content and a BOM either way.
+- The rule trips silently — you don't notice until the linter runs.
+- Worth adding to CONTRIBUTING.md style guidance in a future release.
+
+**The BUG-008 meta-lesson keeps applying:** the cascade pattern (fix one CI thing, surface the next) has now happened five times in this release (BUG-006 → 007 → 008 → 009 → 010). Each fix legitimately needed to be made; none were avoidable. But the count is a sign that the v3.0.0 CI was masking *a lot* — multiple rules across multiple files that had simply never run end-to-end. After v3.0.1, every job in CI runs every file every time, so the rate of these surprises should drop sharply.
+
+---
+
 ## Open Questions for v3
 
 ### OQ-001 · Should logging be implemented?
@@ -384,24 +412,27 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - Core model is sound; carry forward as-is structurally
 - Param block needs `-FolderPath` and `-Username` once BUG-001 is resolved in v3.1
 - `$REPO_BASE` hardcodes the author's GitHub path — fine for the canonical repo, documented for forks in `CONTRIBUTING.md`
+- ✅ File-level `[SuppressMessageAttribute('PSUseUsingScopeModifierInNewRunspaces', ...)]` added on the top-level param block — covers a false positive on the `Start-Job` script block at line ~137, where `$u` is correctly declared via `param($u)` and passed via `-ArgumentList $url` (BUG-010, fixed 2026-05-02)
 
 ### `network.ps1`
 - ✅ All six `10.72.x.x` entries replaced with RFC 5737 documentation IPs (ADR-004)
-- ✅ `$FALLBACK_CONTEXT` variable added — replaces hardcoded `RS` fallback (BUG-002)
-- ✅ `Get-NetworkContext` updated — throws in NonInteractive, warns prominently in interactive (BUG-002)
-- ✅ Null/empty gateway guard added to `Get-NetworkContext` — throws with a clear "no gateway detected" message before the map lookup (BUG-005)
-- ✅ Re-saved as UTF-8 with BOM — file contains non-ASCII characters (em dashes, smart quotes) and was being read as Latin-1 by Windows PowerShell 5.1 (BUG-009, fixed 2026-05-02)
+- ✅ `$FALLBACK_CONTEXT` variable added -- replaces hardcoded `RS` fallback (BUG-002)
+- ✅ `Get-NetworkContext` updated -- throws in NonInteractive, warns prominently in interactive (BUG-002)
+- ✅ Null/empty gateway guard added to `Get-NetworkContext` -- throws with a clear "no gateway detected" message before the map lookup (BUG-005)
+- ✅ Re-saved as UTF-8 with BOM -- file contains non-ASCII characters (em dashes, smart quotes) and was being read as Latin-1 by Windows PowerShell 5.1 (BUG-009, fixed 2026-05-02)
 
 ### `device.ps1`
-- ✅ CIM job cleanup fixed — `$jobs` array + `finally` block (BUG-003; fix confirmed and applied in pre-launch audit 2026-04-30)
-- ✅ `[SuppressMessageAttribute('PSAvoidUsingWriteHost', ...)]` added to `Get-DeviceType` and `Get-UserName` — both contain interactive prompts paired with `Read-Host` where Write-Host is correct (BUG-009, fixed 2026-05-02)
-- BUG-001 (`-FolderPath` / `-Username`) deferred to v3.1 — `Get-UserName` unchanged for now
+- ✅ CIM job cleanup fixed -- `$jobs` array + `finally` block (BUG-003; fix confirmed and applied in pre-launch audit 2026-04-30)
+- ✅ `[SuppressMessageAttribute('PSAvoidUsingWriteHost', ...)]` added to `Get-DeviceType` and `Get-UserName` -- both contain interactive prompts paired with `Read-Host` where Write-Host is correct (BUG-009, fixed 2026-05-02)
+- ✅ Em dashes in BUG-009 justification strings replaced with `--` to keep file ASCII-only and avoid triggering `PSUseBOMForUnicodeEncodedFile` (BUG-010, fixed 2026-05-02)
+- BUG-001 (`-FolderPath` / `-Username`) deferred to v3.1 -- `Get-UserName` unchanged for now
 - `$script:VALID_DEPARTMENTS` and `$script:DEVICE_TYPES` documented in README as extension points
 
 ### `naming.ps1`
 - No runtime bugs found; logic verified correct by pre-launch audit
 - ✅ `[SuppressMessageAttribute('PSAvoidUsingWriteHost', ...)]` added to `Select-NamingMode` (interactive mode-selection prompt) (BUG-009, fixed 2026-05-02)
-- ✅ `[SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', ...)]` added to `New-DeviceName` and `New-UserDeviceName` — false positives, both are pure string-builder functions (BUG-009, fixed 2026-05-02)
+- ✅ `[SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', ...)]` added to `New-DeviceName` and `New-UserDeviceName` -- false positives, both are pure string-builder functions (BUG-009, fixed 2026-05-02)
+- ✅ Em dashes in BUG-009 justification strings replaced with `--` to keep file ASCII-only and avoid triggering `PSUseBOMForUnicodeEncodedFile` (BUG-010, fixed 2026-05-02)
 - `New-DeviceName`, `New-UserDeviceName`, and `Select-NamingMode` all covered by Pester tests
 
 ### `rename.ps1`

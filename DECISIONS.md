@@ -3,7 +3,7 @@
 **Project:** Hostname-Rename  
 **License:** MIT © 2026 Simms  
 **Target:** v3 — clean, open GitHub release  
-**Latest release:** v3.0.1 (2026-05-02) -- CI hygiene patch (BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, BUG-011, Node 24 action bumps)  
+**Latest release:** v3.1.0 (2026-06-03) — see CHANGELOG.md  
 **Log started:** 2026-04-28  
 
 ---
@@ -95,12 +95,22 @@ Reviewed files: `launcher.ps1`, `network.ps1`, `device.ps1`, `naming.ps1`, `rena
 
 ---
 
+### ADR-007 · Logging lives in its own module and never blocks a rename
+
+**Status:** Accepted — implemented in v3.1 (resolves OQ-001)  
+**Decision:** Run logging is provided by a dedicated `logging.ps1` module exposing `Initialize-Log` and `Write-Log`. It is loaded **first** in `$MODULES` so the orchestrator can log throughout. All `Write-Log` calls live in `rename.ps1` (the orchestrator) only — the pure-logic modules (`network.ps1`, `device.ps1`, `naming.ps1`) take no logging dependency, which keeps them independently unit-testable (the Pester suite dot-sources only those three, not `logging.ps1`).  
+**Rationale:** A separate module matches the existing dot-source pattern (ADR-001) and the no-external-dependencies rule (ADR-005 — it uses only built-in cmdlets). Keeping logging out of the leaf modules means the test suite never needs `Write-Log` in scope.  
+**Never-blocks principle:** `Initialize-Log` wraps directory creation in try/catch — on failure it warns once and disables logging for the run. `Write-Log` is a no-op when uninitialised and uses `Add-Content -ErrorAction SilentlyContinue`, so a transient write failure (e.g. a UNC share dropping mid-run) degrades to "no log line" rather than aborting. A device must still be renamed even when the log destination is unreachable.  
+**Default destination:** `%TEMP%\Hostname-Rename\Hostname-Rename_<OLD-NAME>_<timestamp>.log`; `-LogPath` overrides the directory (local or UNC). Old computer name + timestamp keeps per-machine files distinct on a shared share and avoids concurrent-append contention.
+
+---
+
 ## Known Bugs
 
 ### BUG-001 · `-FolderPath` and `-Username` parameters documented but not implemented
 
 **Severity:** High — README documents parameters that do not exist in code  
-**Status:** ✅ Resolved in v3 (README) — Option 3 chosen  
+**Status:** ✅ Fully resolved — docs corrected in v3 (Option 3), parameters **implemented in code in v3.1**  
 **Location:** `README.md` (Available Parameters table) vs `launcher.ps1` (param block) vs `rename.ps1` (param block) vs `device.ps1 → Get-UserName`  
 
 **Was:** README claimed `-FolderPath` and `-Username` as implemented parameters. Folder mode was described as "reads Desktop subfolders" — the implementation reads `C:\Users` profile directories.
@@ -110,7 +120,7 @@ Reviewed files: `launcher.ps1`, `network.ps1`, `device.ps1`, `naming.ps1`, `rena
 - `-Folder` description corrected: now documents `C:\Users` profile directory selection accurately
 - No code changes required for this resolution; plumbing deferred to v3.1
 
-**v3.1 action:** Implement `-FolderPath [string]` and `-Username [string]` across the full call chain — `launcher.ps1` param block → `Rename-DeviceSmart` → `Get-UserName`. Add partial-name matching to `Get-UserName`.
+**v3.1 resolution (implemented):** `-FolderPath [string]` and `-Username [string]` wired across the full call chain — `launcher.ps1` param block → `Rename-DeviceSmart` → `Get-UserName`. `-FolderPath` overrides the `C:\Users` search root (validated; throws if missing). `-Username` does a case-insensitive partial match: interactive shows the filtered list, NonInteractive picks the most recently active match (per the design decision for ambiguous matches), throwing if nothing matches. Either parameter implies User mode via `Select-NamingMode`. The launcher's `Invoke-SelfElevation` now single-quotes forwarded values so a path with spaces survives the UAC relaunch.
 
 ---
 
@@ -162,7 +172,7 @@ The fallback silently inserted `RS` (Riverside Brick's internal signal code) reg
 **Severity:** Low — internal comment inconsistency, linked to BUG-001  
 **Status:** ✅ Resolved in v3 — closed alongside BUG-001  
 **Location:** `device.ps1 → Get-UserName` `.SYNOPSIS` / README `-Username` description  
-**Resolution:** README updated to mark `-Username` as planned v3.1. No code changes required at this stage.
+**Resolution:** README updated to mark `-Username` as planned v3.1 (v3). In v3.1 the parameter is implemented, so the `.SYNOPSIS` now describes a real, matching parameter — the comment/code inconsistency is fully closed.
 
 ---
 
@@ -191,185 +201,29 @@ This condition is treated as always-fatal (no interactive/NonInteractive split) 
 
 ---
 
-### BUG-006 · `placeholder` CI job parser error masked by `continue-on-error: true`
+### BUG-006 … BUG-011 · v3.0.1 CI hardening (summary)
 
-**Severity:** Medium — guard never actually fired; failed branches looked the same as passing ones  
-**Status:** ✅ Resolved (2026-05-01) — released in v3.0.1  
-**Location:** `.github/workflows/ci.yml → placeholder` job
+**Status:** ✅ All resolved in v3.0.1. Full blow-by-blow in CHANGELOG.md → [3.0.1].
 
-**Was:** A workflow-level `defaults.run.shell: pwsh` was set so the three PowerShell jobs (`lint`, `test`, `manifest`) wouldn't have to specify a shell on every step. The `placeholder` job runs on `ubuntu-latest` and its only step is a bash one-liner (`if grep -q "REPLACE_WITH_COMMIT_SHA" launcher.ps1; then ... fi`), but it inherited the global `pwsh` default. pwsh tried to parse the bash `if` as a PowerShell `if` statement and died on line 2:
+These surfaced sequentially: each fix unblocked the next CI failure (the `lint → test`
+job dependency hid later failures behind earlier ones). Recorded here so the audit
+trail is complete; only the durable lessons are repeated:
 
-```
-ParserError:
-Line | 2 | if grep -q "REPLACE_WITH_COMMIT_SHA" launcher.ps1; then
-     |    | Missing '(' after 'if' in if statement.
-```
-
-The error fired before grep ran. Every push to `main` masked this because `continue-on-error: true` is set on the step for `main` only (per ADR-002 — keep the canonical-template state from breaking CI). Result: the ADR-002 guard had never actually executed on any branch since CI was added.
-
-**Resolution:** `shell: bash` set on the single step that needs it. The three other jobs still inherit `pwsh` from the global default since they all run PowerShell on Windows runners.
-
-**Lesson for future CI work:** A `continue-on-error` guard around a step that errors for the *wrong* reason (parser error) looks identical to one that errors for the *right* reason (guard tripped). When introducing `continue-on-error`, run the workflow on a feature branch at least once to confirm the underlying check actually executes.
+- **BUG-006** — `placeholder` CI step inherited the global `pwsh` shell and failed to parse a bash one-liner; fixed with an explicit `shell: bash`. Masked on `main` by ADR-002's `continue-on-error`.
+- **BUG-007** — `Get-Hashes.ps1` framing moved off `Write-Host` onto the success stream (lint compliance + fixes a redirection-capture bug).
+- **BUG-008** — Pester v5 `-Configuration` and `-PassThru` are mutually exclusive; switched to `$cfg.Run.PassThru = $true`.
+- **BUG-009** — analyzer pass: interactive `Write-Host` and the pure `New-*` builders suppressed *with justifications* (not a blanket settings file); three files given a UTF-8 BOM because PS 5.1 reads BOM-less non-ASCII as Latin-1.
+- **BUG-010** — **Lesson: keep new code ASCII-only unless the file already contains non-ASCII.** A SuppressMessage justification I added contained em dashes, which pushed two ASCII files into "needs a BOM" territory. v3.1 takes this further (see below).
+- **BUG-011** — once the test job finally ran, an orphan `InModuleScope` and a `$fn` discovery/run-scope helper were fixed. A `# TODO (v3.1)` was left: refactor `Get-SerialLast4` so its cleaning logic lives in a WMI-free helper the tests can call directly. **Done in v3.1.**
 
 ---
 
-### BUG-007 · `Get-Hashes.ps1` framing lost on output redirection (and PSScriptAnalyzer noise)
+### v3.1 · Resolution of the BUG-009/010/011 threads
 
-**Severity:** Low — cosmetic CI failure, plus a latent edge case for redirection users  
-**Status:** ✅ Resolved (2026-05-01) — released in v3.0.1  
-**Location:** `tools/Get-Hashes.ps1`
+**Status:** ✅ Resolved in v3.1.
 
-**Was:** The script was inconsistent about output streams. Eight `Write-Host` calls printed the manifest framing (header lines, opening `$MANIFEST = [ordered]@{`, closing `}`, "Next steps"), while the actual hash entries used a bare-string expression (`'    "{0}" = "{1}"' -f $file, $hex`) that went to the success stream. Two consequences:
-
-1. `PSScriptAnalyzer` flagged all eight `Write-Host` calls under `PSAvoidUsingWriteHost`, breaking the `lint` job in CI.
-2. Output redirection silently dropped half the script's output. `.\tools\Get-Hashes.ps1 > manifest.txt` produced a file containing only the inner hash lines, with no surrounding `$MANIFEST = [ordered]@{` / `}` framing — the user would have to copy the framing back in by hand. This was never a documented use case but it's a reasonable thing to try, and the failure mode was silent.
-
-**Resolution:** All eight `Write-Host` calls converted to bare-string expressions (`""`, `"# Paste this block ..."`, `"}"`, etc.). Everything now flows through the success stream. Interactive console output is identical (PowerShell displays the success stream by default). Redirection now captures the complete pasteable block.
-
-**Note on the broader Write-Host situation:** `device.ps1`, `naming.ps1`, and `rename.ps1` also contain `Write-Host` calls (for interactive prompts paired with `Read-Host`), but those were *not* flagged in the same CI run that flagged `Get-Hashes.ps1`. The reason isn't fully understood — possibly an analyzer-version subtlety around `Write-Host` inside vs outside functions, possibly something else. Those usages are deliberate (the calls write to the user's terminal, not to a stream that downstream callers might capture) and the right fix if they ever do trip the linter is *not* the same as the one applied here — it would be either a per-function `[Diagnostics.CodeAnalysis.SuppressMessageAttribute]` or a project-level `PSScriptAnalyzerSettings.psd1` excluding the rule. Left as-is for now; revisit only if a real failure surfaces.
-
----
-
-### BUG-008 · Pester invocation used incompatible parameter sets — `test` job had never actually run
-
-**Severity:** Medium — the `test` job had never executed since CI was added in v3.0.0  
-**Status:** ✅ Resolved (2026-05-01) — released in v3.0.1  
-**Location:** `.github/workflows/ci.yml → test` job, "Run Pester" step
-
-**Was:** The Pester invocation combined `-Configuration` and `-PassThru`:
-
-```powershell
-$result = Invoke-Pester -Configuration $cfg -PassThru
-```
-
-In Pester v5 these belong to **different parameter sets** and cannot be combined. The `Configuration` parameter set requires every runtime option (including `PassThru`) to be set on the configuration object. PowerShell rejected the call before any test ran:
-
-```
-Invoke-Pester: Parameter set cannot be resolved using the specified named
-parameters. One or more parameters issued cannot be used together or an
-insufficient number of parameters were provided.
-```
-
-**Why this stayed hidden:** The bug had been latent since CI was added in v3.0.0. Two earlier failures masked it:
-
-1. BUG-006 had `placeholder` failing for the wrong reason on every branch, but `continue-on-error: true` on `main` made it look green on the canonical branch.
-2. BUG-007 had `lint` failing on `PSAvoidUsingWriteHost` warnings.
-
-Because the `test` job declares `needs: lint`, while lint was failing the `test` job was being **skipped**, not failing. Skipped jobs don't show as red — the workflow chain looked broken-but-explained for an unrelated reason rather than surfacing this bug. As soon as lint was fixed (BUG-007), the `test` job ran for the first time and immediately surfaced this issue.
-
-**Resolution:** `PassThru` moved onto the configuration object:
-
-```powershell
-$cfg.Run.PassThru = $true
-$result = Invoke-Pester -Configuration $cfg
-```
-
-Inline comment added next to the call documenting the parameter-set rule so the next person to touch this code doesn't reintroduce the mistake.
-
-**Meta-lesson — `needs:` chains in CI hide downstream bugs:** Across BUG-006, BUG-007, and BUG-008, three latent bugs were chained behind two layers of "looks fine but isn't actually running" — `continue-on-error` on `main`, then `needs: lint` skipping the test job. Each fix surfaced the next failure. Takeaway: when adding or fixing CI, run each job in isolation at least once. A green check on a workflow run does not mean every job inside it actually executed; jobs can be skipped or `continue-on-error`-swallowed and look identical to a healthy run from the summary view. Worth glancing at the run's individual job statuses, not just the workflow result.
-
----
-
-### BUG-009 · Lint warnings exposed once analyzer could scan past `Get-Hashes.ps1`
-
-**Severity:** Medium — 27 analyzer warnings, all blocked the `lint` job  
-**Status:** ✅ Resolved (2026-05-02) — released in v3.0.1  
-**Location:** `device.ps1`, `naming.ps1`, `rename.ps1`, `network.ps1`, `tests/Hostname-Rename.Tests.ps1`
-
-**Was:** Once `Get-Hashes.ps1` was cleaned (BUG-007), the `lint` job got further through the codebase and surfaced 27 warnings across four rule categories. Notably, BUG-007's own DECISIONS note had said *"the reason isn't fully understood"* about why `device.ps1`/`naming.ps1`/`rename.ps1` weren't being flagged in the BUG-007 run. The reason now appears to be **file ordering**: `Get-ChildItem -Path . -Filter "*.ps1" -Recurse` returned `Get-Hashes.ps1` first or its 8 errors caused early termination; once it was clean, the analyzer reached the rest. That's a guess rather than a confirmed mechanism, but the practical outcome is clear — fixing one set of files exposed the next.
-
-The 27 warnings broke down into four categories:
-
-**Category 1 — `PSAvoidUsingWriteHost` (9 occurrences):** All in interactive prompts paired with `Read-Host`. `Write-Host` is the *correct* call here; downstream callers must not capture prompt text. Resolution: per-function `[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = '...')]` on `Get-DeviceType`, `Get-UserName` (device.ps1), `Select-NamingMode` (naming.ps1), and `Rename-DeviceSmart` (rename.ps1). The justification string explains the interactive-prompt rationale at each site.
-
-**Category 2 — `PSUseShouldProcessForStateChangingFunctions` (2 occurrences):** Flagged `New-DeviceName` and `New-UserDeviceName` in `naming.ps1`. Both are pure functions: take parameters, build a string, return it. The verb `New-` is correct per `Get-Verb` (it produces a new value). The rule is heuristic-based — it flags any verb in the "create/delete/modify" category — and produces a false positive here. Resolution: per-function suppression with justification.
-
-Important: this same rule will *correctly* fire against `Rename-DeviceSmart` once OQ-002 (`SupportsShouldProcess`/`-WhatIf`) is implemented in v3.1, because that function genuinely changes system state. The suppression was *not* applied to `Rename-DeviceSmart` — letting the warning surface when OQ-002 work begins is the desired behaviour.
-
-**Category 3 — `PSUseBOMForUnicodeEncodedFile` (3 occurrences):** Flagged `network.ps1`, `rename.ps1`, and `tests/Hostname-Rename.Tests.ps1`. All three contain non-ASCII characters (em dashes, smart quotes, box-drawing dividers) but had no UTF-8 byte-order mark. Real bug: Windows PowerShell 5.1 reads BOM-less files as Latin-1 by default — running these files on a fresh Windows 5.1 host would garble the non-ASCII output. Resolution: re-saved all three as UTF-8 with BOM (3 bytes `EF BB BF` prepended). Not a suppression — an actual fix.
-
-**Category 4 — `PSUseDeclaredVarsMoreThanAssignments` (1 occurrence):** Flagged `$clean` in `tests/Hostname-Rename.Tests.ps1` line 157. False positive: the variable is declared in `BeforeAll` and used in 8 `It` blocks below, but PowerShell static analysis can't see across Pester's scope boundary. Resolution: promoted to `$script:clean` and updated all 8 call sites. This isn't just a workaround — it's also semantically more correct, since Pester's `BeforeAll` runs in a separate scope from `It` blocks and `$script:` is the explicit way to share state across both.
-
-**Decision: per-function suppressions, not a project settings file.** A `PSScriptAnalyzerSettings.psd1` excluding the two affected rules project-wide would have been a one-file change instead of nine attribute additions. Rejected for two reasons: (1) the suppressions document *why* each rule is exempt at the call site, where a future maintainer can see them; a settings file disables rules globally with no co-located rationale. (2) New `Write-Host` or `New-`-verb code added later would silently skip linting under a settings-file approach; per-function suppressions only exempt the specific functions where the exemption is justified. The settings file is the right tool when there's a project-wide convention to enforce; for narrow, justified exceptions, attributes are better.
-
-**Manifest impact:** the BOM addition to `network.ps1` and `rename.ps1` changed file content. Anyone with a populated `$MANIFEST` in `launcher.ps1` will need to regenerate hashes via `tools/Get-Hashes.ps1` before deploying. Canonical-repo `$MANIFEST` uses `REPLACE_WITH_HASH` placeholders so the CI `manifest` job already exits cleanly without performing a check.
-
-**Closes BUG-007's open question:** BUG-007's "Note on the broader Write-Host situation" said the right fix in the hypothetical case of a real failure would be either per-function suppression or a project settings file, and left the choice for "if a real failure surfaces." A real failure surfaced. The choice has been made, in writing, for next time.
-
----
-
-### BUG-010 · One false-positive analyzer rule and an ASCII regression caused by BUG-009's own justification strings
-
-**Severity:** Low — 4 warnings, all easily resolved  
-**Status:** ✅ Resolved (2026-05-02) — released in v3.0.1  
-**Location:** `launcher.ps1`, `device.ps1`, `naming.ps1`
-
-**Was:** The CI run after BUG-009 surfaced 4 new analyzer warnings, in two separate categories.
-
-**Category 1 — `PSUseUsingScopeModifierInNewRunspaces` (false positive):** Flagged `$u` on lines 138 and 139 of `launcher.ps1`, inside a `Start-Job -ScriptBlock { ... } -ArgumentList $url` call. The analyzer's heuristic looks for variables referenced inside script blocks and warns when they might need a `$using:` modifier to capture outer-scope state. Here, the `$u` IS declared inside the block — by the `param($u)` on line 138 itself — and the value is passed in via `-ArgumentList $url` on line 140. This is the correct, idiomatic pattern for `Start-Job`; switching to `$using:` would be a regression. The analyzer simply can't tell that `$u` is the param, not an outer-scope reference. There is no outer `$u` (the outer variable is `$url`).
-
-Resolution: file-level `[SuppressMessageAttribute('PSUseUsingScopeModifierInNewRunspaces', '', Justification = ...)]` on `launcher.ps1`'s top-level `param()` block. The justification documents the false positive and explicitly notes that `$using:` would be wrong here, so a future maintainer doesn't "fix" it.
-
-**Category 2 — `PSUseBOMForUnicodeEncodedFile` (a regression I caused):** Flagged `device.ps1` and `naming.ps1`. Both files were pure ASCII in v3.0.0 and didn't need a BOM. The BUG-009 SuppressMessage attributes I added used em dashes (`—`, U+2014) in their `Justification` strings — text like *"Pure function — assembles a string from parameters"*. Em dashes are 3-byte UTF-8 sequences, so introducing them pushed both files from ASCII to non-ASCII territory, triggering the BOM rule.
-
-Resolution: replaced 2 em dashes in `device.ps1` and 3 in `naming.ps1` with `--` (double hyphen). Both files are back to ASCII-only and the BOM rule no longer fires. The justification text reads slightly less elegantly but is functionally identical.
-
-**Why not just add BOM to those files?** It would also have worked, but it would have papered over the regression rather than reverting it. The principle: a v3.0.0 file that was ASCII should stay ASCII unless there's a substantive reason to change. There wasn't here — em dashes were a stylistic preference of mine, not load-bearing.
-
-**Practical lesson — keep new code ASCII-only unless the file already contains non-ASCII content:**
-- Comments, justifications, and prose strings in `.ps1` files should default to plain `--`, regular straight quotes (`'` and `"`), and ASCII-only punctuation.
-- Use Unicode characters only when the file *already* needs a BOM for other reasons (e.g. `network.ps1` has decorative `!!` blocks, `rename.ps1` has box-drawing dividers, the test file has em dashes in test descriptions). Those files have legitimate non-ASCII content and a BOM either way.
-- The rule trips silently — you don't notice until the linter runs.
-- Worth adding to CONTRIBUTING.md style guidance in a future release.
-
-**The BUG-008 meta-lesson keeps applying:** the cascade pattern (fix one CI thing, surface the next) has now happened six times in this release (BUG-006 -> 007 -> 008 -> 009 -> 010 -> 011). Each fix legitimately needed to be made; none were avoidable. But the count is a sign that the v3.0.0 CI was masking *a lot* -- multiple rules across multiple files that had simply never run end-to-end. After v3.0.1, every job in CI runs every file every time, so the rate of these surprises should drop sharply.
-
----
-
-### BUG-011 · Pester test failures surfaced once the test job actually ran for the first time
-
-**Severity:** Medium -- 5 of 38 tests failing  
-**Status:** Resolved (2026-05-02) -- released in v3.0.1  
-**Location:** `tests/Hostname-Rename.Tests.ps1`
-
-**Was:** With BUG-008 fixed and the lint job clean (after BUG-009 + BUG-010), the test job finally ran end-to-end for the first time since CI was added. 33 of 38 tests passed. The 5 failures fell into two distinct categories, both pre-existing in v3.0.0 but masked by the BUG-008 chain.
-
-**Category 1 -- Orphan `InModuleScope` (1 failure):** Line 99-103 of the test file:
-
-```powershell
-It "Returns the last 4 chars of a cleaned 8-char serial" {
-    # Cleaned: VMWA3F9B2C1 -> last 4: B2C1
-    InModuleScope -Scriptblock {
-        # Mock CIM since we only want to test the logic
-    }
-    ...
-```
-
-`InModuleScope` requires a `-ModuleName` parameter in Pester v5; without it, parameter binding fails. This was leftover scaffolding from an abandoned approach where the author intended to use `InModuleScope` to mock `Get-CimInstance` and test the real `Get-SerialLast4` function. They switched to a helper-scriptblock approach (the `$fn = { ... }` below the `InModuleScope` block) but forgot to delete the orphan call. The block body was just a comment, so it never did anything functional; deleting the entire `InModuleScope -Scriptblock { ... }` call has zero effect on what the test verifies.
-
-**Category 2 -- `$fn` declared at Context scope, used in It scope (4 failures):** The `Context "Serial shorter than 4 chars"` block declared a shared helper:
-
-```powershell
-Context "Serial shorter than 4 chars -- pad with leading zeros" {
-    $fn = { param($s) ... }   # at Context level
-    
-    It "3 chars -- left-pads to 4" {
-        & $fn "ABC" | Should -Be "0ABC"   # FAILS: $fn doesn't exist here
-    }
-    ...
-```
-
-In Pester v5, code at `Context` level executes during *test discovery*; `It` blocks execute during *test run*, in a separate scope. So `$fn` was a discovery-time variable that no longer existed by the time the test bodies tried to invoke it. Same Pester scope rule that caused the BUG-009 `$clean` issue in the `Get-UserName` block.
-
-The "Serial longer than 4 chars" tests right above this block didn't have the issue because each of the three tests in that Context declared its own local `$fn` inside the `It` block (lines 105, 115, 123 of the original). Same code, different scope, different result.
-
-**Resolution:** Wrapped the shared helper in `BeforeAll { $script:fn = { ... } }` and updated all four `It` blocks to call `$script:fn` instead of `$fn`. The `BeforeAll` runs at the right time, the `$script:` scope makes the variable visible across the `BeforeAll` -> `It` boundary. Identical pattern to the BUG-009 fix.
-
-Also took the opportunity to swap the em dashes (`--`) and arrows (`->`) in the test descriptions for ASCII equivalents, consistent with the BUG-010 lesson. The test file still has a BOM (it has other non-ASCII content elsewhere), but reducing the surface of non-ASCII makes future analyzer-rule changes less likely to bite.
-
-**The deferred follow-up worth flagging:** `Get-SerialLast4` tests exercise a *re-implementation* of the cleaning logic via the inline `$fn` scriptblock, not the real function. The real `Get-SerialLast4` calls `Get-CimInstance Win32_BIOS`, which can't run in CI without a real Windows device. So if a contributor breaks the cleaning logic in `device.ps1` tomorrow -- say, by changing `[^A-Za-z0-9]` to `[^A-Za-z]` -- the test would still pass, because the test isn't testing the real function. A `# TODO (v3.1)` comment has been added to the test noting that the right fix is to refactor `Get-SerialLast4` so the cleaning logic lives in a standalone, parameterised helper function (no WMI), and have the tests call that helper directly. This is a real testing improvement but requires a runtime-side change to `device.ps1`, putting it outside v3.0.1's "no runtime behaviour changes" scope.
-
-**Lesson for next time:** When `needs:` chains skip jobs, a green-looking workflow can mask substantial test debt. The BUG-008 chain meant 5/38 tests had been broken since v3.0.0 was released and nobody knew. For v3.1, consider removing or relaxing `needs:` chains once the upstream jobs have stabilised, so test failures aren't gated on lint passing first. (Or, more defensively: have at least one CI job that runs the full Pester suite without the `needs: lint` predicate, so test failures always surface even when lint is unhappy.)
+- **BOM thread closed.** `network.ps1`, `rename.ps1`, and the test file were converted to ASCII-only (em dashes / arrows / box-drawing → `--` / `->`) and their BOMs removed. The repo is now uniformly ASCII; **no file requires a UTF-8 BOM**, retiring the whole `PSUseBOMForUnicodeEncodedFile` concern (the natural endpoint of the BUG-010 lesson).
+- **BUG-011 follow-up done.** The cleaning logic now lives in pure, WMI-free helpers — `ConvertTo-SerialLast4` (serial) and `ConvertTo-CleanUserName` (profile name) — and the type-decision chain in `Resolve-DeviceType`. The Pester suite calls these **real** functions instead of inline copies, so the prior `$script:`-scope scriptblock workaround (the `PSUseDeclaredVarsMoreThanAssignments` false positive) is gone.
 
 ---
 
@@ -383,8 +237,9 @@ Also took the opportunity to swap the em dashes (`--`) and arrows (`->`) in the 
 - B. Add a lightweight `Write-Log` wrapper that writes to a UNC path if reachable, local temp otherwise
 - C. Add optional `-LogPath [string]` parameter
 
-**Recommendation:** Option B with Option C as the override. Keep it opt-in — logging should never block a rename.  
-**Status:** ⬜ Open — deferred to v3.1
+**Recommendation (at v3):** Option B with Option C as the override.  
+**Decision (v3.1):** Default **on**, writing to `%TEMP%\Hostname-Rename`, with `-LogPath` overriding the directory (local or UNC). This is Option C made default-on rather than the originally-recommended Option B (no "UNC-if-reachable-else-temp" probing — a single, predictable default that `-LogPath` redirects). Logging never blocks a rename. Implemented as the `logging.ps1` module (see ADR-007).  
+**Status:** ✅ Resolved in v3.1 — `logging.ps1` (`Initialize-Log` / `Write-Log`)
 
 ---
 
@@ -393,7 +248,8 @@ Also took the opportunity to swap the em dashes (`--`) and arrows (`->`) in the 
 **Background:** `Rename-Computer` supports `-WhatIf` natively. The orchestrator does not expose it.  
 **Value:** Useful for MDM testing — verify what name *would* be generated without actually renaming.  
 **Recommendation:** Add `[CmdletBinding(SupportsShouldProcess)]` to `Rename-DeviceSmart` and pass `-WhatIf:$WhatIfPreference` to `Rename-Computer`.  
-**Status:** ⬜ Open — deferred to v3.1
+**Decision (v3.1):** Implemented. `Rename-DeviceSmart` gates the rename with `$PSCmdlet.ShouldProcess`; under `-WhatIf` the interactive Y/N prompt is skipped and the intended rename is reported (logged as a `WhatIf:` line). `launcher.ps1` also declares `SupportsShouldProcess` and forwards `-WhatIf:$WhatIfPreference` so a dry run works through the `iex` / scriptblock deployment surface; a `PSShouldProcess` suppression on the launcher documents that the actual gate lives downstream.  
+**Status:** ✅ Resolved in v3.1
 
 ---
 
@@ -402,7 +258,8 @@ Also took the opportunity to swap the em dashes (`--`) and arrows (`->`) in the 
 **Background:** The current detection chain covers VM, Server, ARM/Mobile, Laptop, Desktop. Tablet/Surface form factors (e.g., Windows tablets, Surface Go) may fall through to `DT`.  
 **Detection signal:** `Win32_SystemEnclosure.ChassisTypes` includes types 30 (Tablet) and 31 (Convertible).  
 **Recommendation:** Add as an optional enhancement; does not block v3.  
-**Status:** ⬜ Open — deferred to v3.1 alongside `PB` device type
+**Decision (v3.1):** Implemented as a new `TB` type for both Tablet (chassis 30) and Convertible (chassis 31), added alongside `PB` (Pizza Box, chassis 5). `Get-DeviceType` now fires a fourth parallel CIM query (`Win32_SystemEnclosure`) and delegates to the pure `Resolve-DeviceType`. Priority chain: `VM > SV > TB > MD > LT > PB > DT` — `SV` before the chassis tests so a server OS always wins; `TB` before `MD` so an ARM convertible is recorded by its form factor.  
+**Status:** ✅ Resolved in v3.1 — `PB` + new `TB` type
 
 ---
 
@@ -411,7 +268,7 @@ Also took the opportunity to swap the em dashes (`--`) and arrows (`->`) in the 
 **Background:** The 8-second timeout in `Select-NamingMode` is hardcoded.  
 **Value:** Teams with slow startup environments may want more time; MDM users never need it.  
 **Recommendation:** Low priority. The `-NonInteractive` flag already bypasses the prompt entirely. Leave hardcoded for now; documented as a "fork and adjust" customisation point in `CONTRIBUTING.md`.  
-**Status:** ⬜ Open — accepted as-is for v3; revisit only if a real need is reported
+**Status:** ⬜ Open — accepted as-is through v3.1; the 8-second prompt remains hardcoded (the docstring was corrected to match it in v3.1). Listed as a v3.2 idea. Revisit only if a real need is reported.
 
 ---
 
@@ -448,68 +305,72 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 | 12 | Document `$GATEWAY_MAP` externalisation pattern for forks (ADR-004) | Doc | Medium | ✅ Done — `CONTRIBUTING.md` → Customisation Points |
 | 9 | Add `CHANGELOG.md` | Open-source hygiene | Low | ✅ Done — `CHANGELOG.md` |
 | — | Fix BUG-005: null/empty gateway misleading error (found in pre-launch audit) | Bug | Low | ✅ Done — `network.ps1` |
-| 5 | Add `SupportsShouldProcess` / `-WhatIf` to `Rename-DeviceSmart` (OQ-002) | Enhancement | Medium | ⬜ Open — deferred to v3.1 |
-| 7 | Add optional logging scaffold (OQ-001) | Enhancement | Low | ⬜ Open — deferred to v3.1 |
+| 5 | Add `SupportsShouldProcess` / `-WhatIf` to `Rename-DeviceSmart` (OQ-002) | Enhancement | Medium | ✅ Done in v3.1 — `rename.ps1`, `launcher.ps1` |
+| 7 | Add optional logging scaffold (OQ-001) | Enhancement | Low | ✅ Done in v3.1 — `logging.ps1` (ADR-007) |
+
+### v3.1 additions
+
+| # | Item | Type | Status |
+|---|---|---|---|
+| 13 | Implement `-FolderPath` / `-Username` in code (BUG-001/004) | Feature | ✅ Done — `launcher.ps1`, `rename.ps1`, `device.ps1` |
+| 14 | Add `PB` detection + new `TB` type via `Win32_SystemEnclosure` (OQ-003) | Feature | ✅ Done — `device.ps1` (`Resolve-DeviceType`) |
+| 15 | Refactor cleaning logic into WMI-free helpers; tests call real functions (BUG-011 TODO) | Refactor / Test | ✅ Done — `ConvertTo-SerialLast4`, `ConvertTo-CleanUserName` |
+| 16 | Convert remaining non-ASCII files to ASCII; remove all BOMs | Cleanup | ✅ Done — `network.ps1`, `rename.ps1`, tests |
+| 17 | Fix stale "15-second" docstring in `Select-NamingMode` | Doc | ✅ Done — `naming.ps1` |
+| 18 | Quote forwarded values in `Invoke-SelfElevation` (spaces in `-FolderPath`) | Bug | ✅ Done — `launcher.ps1` |
 
 ---
 
 ## File-by-File Notes
 
+### `logging.ps1` *(new in v3.1)*
+- Loaded **first** so the orchestrator can log throughout (ADR-007)
+- `Initialize-Log` (resolves `%TEMP%\Hostname-Rename` or `-LogPath`; warns + disables on failure) and `Write-Log` (timestamped append; no-op if uninitialised; `-ErrorAction SilentlyContinue` so writes never block)
+- ASCII-only, no BOM. No `Write-Host`; uses `Write-Warning` only on init failure
+
 ### `launcher.ps1`
-- Core model is sound; carry forward as-is structurally
-- Param block needs `-FolderPath` and `-Username` once BUG-001 is resolved in v3.1
+- ✅ `logging.ps1` prepended to `$MODULES` and `$MANIFEST` (loads first); `$MANIFEST` switched to `[ordered]` to match `Get-Hashes.ps1` output for a clean paste
+- ✅ `-FolderPath` / `-Username` / `-LogPath` params added and forwarded to `Rename-DeviceSmart`; `SupportsShouldProcess` declared so `-WhatIf` flows through (with a justified `PSShouldProcess` suppression — the gate lives in the orchestrator)
+- ✅ `Invoke-SelfElevation` now single-quotes forwarded parameter *values* (doubling embedded quotes) so a value with spaces survives the UAC relaunch on both the `-File` and `iex`/`wt.exe` paths (checklist item 18)
 - `$REPO_BASE` hardcodes the author's GitHub path — fine for the canonical repo, documented for forks in `CONTRIBUTING.md`
-- ✅ File-level `[SuppressMessageAttribute('PSUseUsingScopeModifierInNewRunspaces', ...)]` added on the top-level param block — covers a false positive on the `Start-Job` script block at line ~137, where `$u` is correctly declared via `param($u)` and passed via `-ArgumentList $url` (BUG-010, fixed 2026-05-02)
 
 ### `network.ps1`
 - ✅ All six `10.72.x.x` entries replaced with RFC 5737 documentation IPs (ADR-004)
-- ✅ `$FALLBACK_CONTEXT` variable added -- replaces hardcoded `RS` fallback (BUG-002)
-- ✅ `Get-NetworkContext` updated -- throws in NonInteractive, warns prominently in interactive (BUG-002)
-- ✅ Null/empty gateway guard added to `Get-NetworkContext` -- throws with a clear "no gateway detected" message before the map lookup (BUG-005)
-- ✅ Re-saved as UTF-8 with BOM -- file contains non-ASCII characters (em dashes, smart quotes) and was being read as Latin-1 by Windows PowerShell 5.1 (BUG-009, fixed 2026-05-02)
+- ✅ `$FALLBACK_CONTEXT` variable added — replaces hardcoded `RS` fallback (BUG-002)
+- ✅ `Get-NetworkContext` updated — throws in NonInteractive, warns prominently in interactive (BUG-002)
+- ✅ Null/empty gateway guard added to `Get-NetworkContext` — throws with a clear "no gateway detected" message before the map lookup (BUG-005)
+- ✅ v3.1: converted to ASCII-only (one comment em dash → `--`); BOM removed (no non-ASCII content remains)
 
 ### `device.ps1`
-- ✅ CIM job cleanup fixed -- `$jobs` array + `finally` block (BUG-003; fix confirmed and applied in pre-launch audit 2026-04-30)
-- ✅ `[SuppressMessageAttribute('PSAvoidUsingWriteHost', ...)]` added to `Get-DeviceType` and `Get-UserName` -- both contain interactive prompts paired with `Read-Host` where Write-Host is correct (BUG-009, fixed 2026-05-02)
-- ✅ Em dashes in BUG-009 justification strings replaced with `--` to keep file ASCII-only and avoid triggering `PSUseBOMForUnicodeEncodedFile` (BUG-010, fixed 2026-05-02)
-- BUG-001 (`-FolderPath` / `-Username`) deferred to v3.1 -- `Get-UserName` unchanged for now
+- ✅ CIM job cleanup fixed — `$jobs` array + `finally` block (BUG-003; fix confirmed and applied in pre-launch audit 2026-04-30)
+- ✅ v3.1: `$script:DEVICE_TYPES` gains `PB` and `TB`. `Get-DeviceType` fires a 4th parallel query (`Win32_SystemEnclosure`) and delegates the decision to the new pure `Resolve-DeviceType` (chain `VM > SV > TB > MD > LT > PB > DT`)
+- ✅ v3.1: serial/username cleaning extracted into WMI-free helpers `ConvertTo-SerialLast4` and `ConvertTo-CleanUserName`; `Get-SerialLast4` / `Get-UserName` delegate to them (BUG-011 follow-up). `Get-UserName` gains `-FolderPath` / `-Username` with case-insensitive partial match (BUG-001)
 - `$script:VALID_DEPARTMENTS` and `$script:DEVICE_TYPES` documented in README as extension points
 
 ### `naming.ps1`
-- No runtime bugs found; logic verified correct by pre-launch audit
-- ✅ `[SuppressMessageAttribute('PSAvoidUsingWriteHost', ...)]` added to `Select-NamingMode` (interactive mode-selection prompt) (BUG-009, fixed 2026-05-02)
-- ✅ `[SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', ...)]` added to `New-DeviceName` and `New-UserDeviceName` -- false positives, both are pure string-builder functions (BUG-009, fixed 2026-05-02)
-- ✅ Em dashes in BUG-009 justification strings replaced with `--` to keep file ASCII-only and avoid triggering `PSUseBOMForUnicodeEncodedFile` (BUG-010, fixed 2026-05-02)
+- No bugs found; logic verified correct by pre-launch audit
 - `New-DeviceName`, `New-UserDeviceName`, and `Select-NamingMode` all covered by Pester tests
+- ✅ v3.1: `Select-NamingMode` `.SYNOPSIS` corrected from "15-second" to the actual 8 seconds (checklist 17); gains `-FolderPath` / `-Username` params that imply User mode (explicit `-Folder`/`-Gateway` still take priority)
 
 ### `rename.ps1`
 - ✅ `-NonInteractive:$NonInteractive` forwarded to `Get-NetworkContext` (BUG-002)
-- ✅ `[SuppressMessageAttribute('PSAvoidUsingWriteHost', ...)]` added to `Rename-DeviceSmart` (interactive proposed-name confirmation) (BUG-009, fixed 2026-05-02)
-- ✅ Re-saved as UTF-8 with BOM — file contains non-ASCII characters and was being read as Latin-1 by Windows PowerShell 5.1 (BUG-009, fixed 2026-05-02)
-- `Rename-DeviceSmart` still needs `SupportsShouldProcess` (OQ-002, checklist item 5) — deferred to v3.1. The `PSUseShouldProcessForStateChangingFunctions` rule is *deliberately not suppressed* on this function so the warning surfaces when OQ-002 work begins.
-- Param additions for BUG-001 deferred to v3.1
+- ✅ v3.1: `[CmdletBinding(SupportsShouldProcess)]`; rename gated by `$PSCmdlet.ShouldProcess` (OQ-002, checklist 5). New `-FolderPath` / `-Username` / `-LogPath` params (BUG-001). Calls `Initialize-Log` then `Write-Log` throughout — all logging lives here so the leaf modules stay test-clean (ADR-007)
+- ✅ v3.1: converted to ASCII-only (box-drawing / em dash → `--`); BOM removed
 
 ### `tools/Get-Hashes.ps1`
+- Works correctly; no changes needed beyond v3.1 adding `logging.ps1` to the hashed `$files` list (first)
 - The CI `manifest` job (OQ-005) performs equivalent verification automatically on every PR — no longer a manual-only step
-- ✅ `Write-Host` calls replaced with bare-string expressions to clear `PSAvoidUsingWriteHost` warnings; also fixes a latent redirection bug where the framing was lost when the script was piped to a file (BUG-007, fixed 2026-05-01)
 
 ### `tests/Hostname-Rename.Tests.ps1` *(new in v3)*
 - Pester v5 test suite covering all pure-logic functions: `New-DeviceName`, `New-UserDeviceName`, `Get-SerialLast4` cleaning and padding, `Get-UserName` UPN cleaning steps, `Select-NamingMode` switch precedence, `Get-NetworkContext` mapping and fallback, and a full integration check of the 15-character NetBIOS limit across all valid department/type combinations
-- No WMI or OS dependency -- all tests run in CI without a real Windows device
+- No WMI or OS dependency — all tests run in CI without a real Windows device
+- ✅ v3.1: serial/username tests now call the **real** `ConvertTo-SerialLast4` / `ConvertTo-CleanUserName` (closes the BUG-011 gap, removes the `$script:` scriptblock workaround); new `Resolve-DeviceType` block (chain + priority, incl. PB/TB) and `Select-NamingMode` FolderPath/Username cases; PB/TB added to the integration sweep. Converted to ASCII-only, BOM removed
 - Run locally: `Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed`
-- ✅ `$clean` scriptblock promoted to `$script:clean` to clear `PSUseDeclaredVarsMoreThanAssignments` (false positive caused by Pester's BeforeAll -> It scope boundary). Also semantically more correct. (BUG-009, fixed 2026-05-02)
-- ✅ Re-saved as UTF-8 with BOM -- file contains non-ASCII characters and was being read as Latin-1 by Windows PowerShell 5.1 (BUG-009, fixed 2026-05-02)
-- ✅ Orphan `InModuleScope -Scriptblock { ... }` deleted from the first `Get-SerialLast4` test -- leftover scaffolding that errored in Pester v5 due to missing `-ModuleName`. The block body was a no-op comment. (BUG-011, fixed 2026-05-02)
-- ✅ Shared helper in `Get-SerialLast4 "Serial shorter than 4 chars"` Context wrapped in `BeforeAll { $script:fn = ... }` -- previously declared at Context scope, used in It scope, undefined at runtime. Same Pester v5 cross-scope rule as the BUG-009 `$clean` fix. (BUG-011, fixed 2026-05-02)
-- ⚠️ **Known testing gap:** `Get-SerialLast4` tests exercise a re-implementation of the cleaning logic, not the real function (which depends on `Get-CimInstance Win32_BIOS`). A breakage in `device.ps1` would not be caught. `# TODO (v3.1)` comment added; correct fix is to extract the cleaning logic from `Get-SerialLast4` into a standalone WMI-free helper that tests can call directly.
 
 ### `.github/workflows/ci.yml` *(new in v3)*
 - Four jobs: `lint`, `test`, `manifest`, `placeholder` — see OQ-005 for detail
 - `lint` runs a PS 5.1 / 7.x matrix via `windows-latest`
 - `placeholder` runs on `ubuntu-latest` (faster, no PS needed for a grep check)
-- ✅ `shell: bash` set on the `placeholder` grep step — required because the workflow-level `pwsh` default would otherwise be inherited (BUG-006, fixed 2026-05-01)
-- ✅ `actions/checkout@v6` and `actions/upload-artifact@v7` — bumped from `@v4` to clear the Node.js 20 deprecation warning. Note that `upload-artifact@v5` was insufficient (still defaulted to Node 20 at runtime); v6 was the first release with Node 24 as the default. (2026-05-01)
-- ✅ Pester invocation uses `$cfg.Run.PassThru = $true` on the config object instead of `-PassThru` as a cmdlet parameter — the two are in mutually exclusive parameter sets in Pester v5 (BUG-008, fixed 2026-05-01)
 
 ### `CONTRIBUTING.md` *(new in v3)*
 - Deployment Workflow (step-by-step, fork and canonical repo)
@@ -519,15 +380,14 @@ The `manifest` job supersedes the manual `Get-Hashes.ps1` verification step for 
 - v3.1 planned work table
 
 ### `README.md`
-- ✅ `-Folder` description corrected — documents `C:\Users` profile selection accurately (BUG-001)
-- ✅ `-FolderPath` and `-Username` marked as planned v3.1 (BUG-001 Option 3)
-- ✅ "Network access to log share" requirement removed — no logging code exists (OQ-001)
+- ✅ `-FolderPath` and `-Username` documented as real parameters in v3.1 (no longer "planned"); `-LogPath` and `-WhatIf` rows added (BUG-001, OQ-001, OQ-002)
+- ✅ "Network access to log share" requirement removed in v3 — logging added in v3.1 (default `%TEMP%`, optional `-LogPath`), so no network share is required
 - ✅ Gateway map example updated to RFC 5737 IPs and two-character `AC` org code (ADR-004, ADR-006)
 - ✅ ORG code two-character constraint called out explicitly in Name Format section (ADR-006)
-- ✅ Valid codes section added — departments and device types with WMI detection detail
-- ✅ `PB` (Pizza Box) added as planned v3.1 device type
+- ✅ Valid codes section added — departments and device types with WMI detection detail; v3.1 made `PB` real and added `TB`, reordered to detection priority, and documented the 4th WMI object (`$enc`)
+- ✅ v3.1: Dry Run (`-WhatIf`) example and a Logging section added
 - ✅ `CONTRIBUTING.md` reference added (checklist item 8)
 
 ---
 
-*This log should be updated whenever a v3 decision is made or a checklist item is closed.*
+*This log should be updated whenever a v3.x decision is made or a checklist item is closed.*

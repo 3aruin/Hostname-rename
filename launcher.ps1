@@ -7,13 +7,18 @@
 #       (iwr "https://raw.githubusercontent.com/3aruin/Hostname-rename/COMMIT_SHA/launcher.ps1").Content
 #   )) -NonInteractive -Gateway
 
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess)]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseUsingScopeModifierInNewRunspaces', '',
-    Justification = 'False positive on the Start-Job ScriptBlock around line 137. The block uses param($u) plus -ArgumentList $url to pass the URL into the job, which is the idiomatic and preferred pattern. The analyzer cannot see that $u inside the script block is the param, not an outer-scope reference. Switching to $using: would be wrong here.')]
+    Justification = 'False positive on the Start-Job ScriptBlock around line 150. The block uses param($u) plus -ArgumentList $url to pass the URL into the job, which is the idiomatic and preferred pattern. The analyzer cannot see that $u inside the script block is the param, not an outer-scope reference. Switching to $using: would be wrong here.')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '',
+    Justification = 'SupportsShouldProcess is declared so -WhatIf can be accepted through the iex/scriptblock deployment surface and forwarded to Rename-DeviceSmart, which owns the actual ShouldProcess gate on Rename-Computer. The launcher itself only fetches modules and self-elevates; the single state change (the rename) is gated downstream.')]
 param (
     [switch]$Folder,
     [switch]$Gateway,
-    [switch]$NonInteractive
+    [switch]$NonInteractive,
+    [string]$FolderPath,
+    [string]$Username,
+    [string]$LogPath
 )
 
 Set-StrictMode -Version Latest
@@ -27,11 +32,14 @@ $ErrorActionPreference = "Stop"
 $REPO_BASE  = "https://raw.githubusercontent.com/3aruin/Hostname-rename"
 $COMMIT_SHA = "REPLACE_WITH_COMMIT_SHA"
 
-$MODULES = @("network.ps1", "device.ps1", "naming.ps1", "rename.ps1")
+# logging.ps1 loads first so the orchestrator can log throughout the run.
+$MODULES = @("logging.ps1", "network.ps1", "device.ps1", "naming.ps1", "rename.ps1")
 
 # Expected SHA-256 hashes for each module.
 # Regenerate with .\tools\Get-Hashes.ps1 after any change, then commit.
-$MANIFEST = @{
+# (Ordered to match Get-Hashes.ps1 output for a clean paste.)
+$MANIFEST = [ordered]@{
+    "logging.ps1" = "REPLACE_WITH_HASH"
     "network.ps1" = "REPLACE_WITH_HASH"
     "device.ps1"  = "REPLACE_WITH_HASH"
     "naming.ps1"  = "REPLACE_WITH_HASH"
@@ -64,7 +72,11 @@ function Invoke-SelfElevation {
 
     Write-Verbose "Elevation required. Relaunching as Administrator..."
 
-    # Build argument list from the caller's bound parameters
+    # Build argument list from the caller's bound parameters. Parameter names and
+    # bare switches stay unquoted; VALUES are single-quoted (and embedded quotes
+    # doubled) so a value containing spaces -- e.g. -FolderPath "D:\User Profiles"
+    # -- survives both the array (-File) and string (-Command / wt.exe) relaunch
+    # paths intact.
     $argList = @()
     foreach ($entry in $ScriptParams.GetEnumerator()) {
         if ($entry.Value -is [switch]) {
@@ -72,11 +84,11 @@ function Invoke-SelfElevation {
         } elseif ($entry.Value -is [array]) {
             foreach ($val in $entry.Value) {
                 $argList += "-$($entry.Key)"
-                $argList += "$val"
+                $argList += "'" + ("$val" -replace "'", "''") + "'"
             }
         } else {
             $argList += "-$($entry.Key)"
-            $argList += "$($entry.Value)"
+            $argList += "'" + ("$($entry.Value)" -replace "'", "''") + "'"
         }
     }
 
@@ -150,7 +162,8 @@ foreach ($FileName in $MODULES) {
     } catch {
         throw "Failed to fetch $FileName from $REPO_BASE/$ref/$FileName`n$_"
     } finally {
-        Remove-Job $jobs[$FileName] -Force -ErrorAction SilentlyContinue
+        # -WhatIf:$false so a launcher-level dry run still tidies its fetch jobs.
+        Remove-Job $jobs[$FileName] -Force -ErrorAction SilentlyContinue -WhatIf:$false
     }
 
     # Integrity check -- skipped when manifest entry is still a placeholder
@@ -169,8 +182,13 @@ foreach ($FileName in $MODULES) {
     . ([scriptblock]::Create($content))
 }
 
-# Hand off to the orchestrator
+# Hand off to the orchestrator. -WhatIf:$WhatIfPreference forwards a launcher-level
+# dry run down to where the ShouldProcess gate actually lives.
 Rename-DeviceSmart `
     -Folder:$Folder `
     -Gateway:$Gateway `
-    -NonInteractive:$NonInteractive
+    -NonInteractive:$NonInteractive `
+    -FolderPath $FolderPath `
+    -Username $Username `
+    -LogPath $LogPath `
+    -WhatIf:$WhatIfPreference

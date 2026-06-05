@@ -13,7 +13,7 @@ Thank you for your interest in contributing. This document covers two things:
 
 The integrity model depends on pinning your deployment URL to a specific commit SHA and keeping `$MANIFEST` hashes in sync. The steps below are the minimum safe path every time.
 
-### After any change to module files (`network.ps1`, `device.ps1`, `naming.ps1`, `rename.ps1`)
+### After any change to module files (`logging.ps1`, `network.ps1`, `device.ps1`, `naming.ps1`, `rename.ps1`)
 
 ```
 1.  Edit the module file(s)
@@ -80,9 +80,15 @@ $script:VALID_DEPARTMENTS = @("CS", "SR", "OP", "HQ", "IT", "WS", "MK")
 ### Adding a device type
 
 1. Append the code to `$script:DEVICE_TYPES` in `device.ps1`
-2. Add a detection branch inside the `try` block in `Get-DeviceType`, before the
-   `DT` fallback — the three WMI objects in scope are `$os`, `$cs`, `$cpu`
-3. If your detection needs a fourth WMI class, follow the existing job pattern
+2. Add a branch to `Resolve-DeviceType` (the pure decision function), before the
+   `DT` fallback, in the correct priority position. `Get-DeviceType` only collects
+   the WMI values and passes them in — keeping the chain in `Resolve-DeviceType`
+   means you can unit-test the new branch without a real device. Four values are
+   available: `$os` (`Win32_OperatingSystem`), `$cs` (`Win32_ComputerSystem`),
+   `$cpu` (`Win32_Processor`), and `$enc` (`Win32_SystemEnclosure` → `ChassisTypes`)
+3. If you need a class beyond those four, add a fifth parallel job in
+   `Get-DeviceType` following the existing pattern and pass the value through
+4. Add a Pester case to the `Resolve-DeviceType` block in the test file
 
 ### Externalising `$GATEWAY_MAP` to a separate file
 
@@ -147,17 +153,31 @@ Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed
 - No third-party module dependencies (ADR-005)
 - All interactive prompts must have a `-NonInteractive` bypass path
 - Functions that accept `-NonInteractive` must never call `Read-Host` under that flag
+- **Keep files ASCII-only.** As of v3.1 every file is plain ASCII and carries no
+  BOM. Use `--` instead of em dashes, `->` instead of arrows, and avoid box-drawing
+  or fancy quotes in code and comments. A single non-ASCII character forces a UTF-8
+  BOM (Windows PowerShell 5.1 otherwise reads the file as Latin-1 and garbles it),
+  which the `PSUseBOMForUnicodeEncodedFile` analyzer rule then flags — this bit us
+  twice in v3.0.1 (DECISIONS.md → BUG-009, BUG-010). Markdown docs may use Unicode
+  freely; the rule applies to `.ps1` files.
+- Empty `catch` blocks trip `PSAvoidUsingEmptyCatchBlock`; prefer
+  `-ErrorAction SilentlyContinue` on the call, or put a real statement
+  (e.g. `Write-Verbose`) in the `catch`
 
 ---
 
-## Planned v3.1 Work
+## Shipped in v3.1
 
-The following items are documented and ready for contribution:
+All previously-planned v3.1 work is now released (see CHANGELOG.md → [3.1.0]):
 
-| Item | Description | Reference |
-|---|---|---|
-| `-FolderPath [string]` | Custom profile search path for User mode | BUG-001, DECISIONS.md |
-| `-Username [string]` | Partial username matching in User mode | BUG-001, DECISIONS.md |
-| `PB` device type | Pizza Box detection via `Win32_SystemEnclosure.ChassisTypes` | README, CHANGELOG |
-| `-WhatIf` / `SupportsShouldProcess` | Dry-run support in `Rename-DeviceSmart` | OQ-002 |
-| Optional logging | `Write-Log` wrapper to UNC or local temp | OQ-001 |
+| Item | Status |
+|---|---|
+| `-FolderPath [string]` — custom profile search path (User mode) | ✅ Shipped |
+| `-Username [string]` — partial username matching (User mode) | ✅ Shipped |
+| `PB` device type — Pizza Box (`ChassisTypes` 5) | ✅ Shipped |
+| `TB` device type — Tablet/Convertible (`ChassisTypes` 30/31, OQ-003) | ✅ Shipped |
+| `-WhatIf` / `SupportsShouldProcess` (OQ-002) | ✅ Shipped |
+| Logging — `logging.ps1` (`Initialize-Log` / `Write-Log`, OQ-001) | ✅ Shipped |
+
+Ideas for **v3.2** live in CHANGELOG.md → Unreleased (configurable prompt timeout,
+log retention, chassis-based `LT` detection).

@@ -7,8 +7,11 @@ function Select-NamingMode {
     .SYNOPSIS
         Determines whether to name the device by gateway (dept/type/serial) or
         by user profile (location + employee name).
-        Explicit switches take priority. Interactive mode presents a 15-second
-        timed prompt.
+
+        Explicit -Folder / -Gateway switches take top priority. Supplying
+        -FolderPath or -Username (without an explicit switch) implies User mode.
+        Otherwise NonInteractive defaults to Gateway, and interactive sessions
+        get an 8-second timed prompt that defaults to Gateway.
 
     .NOTES
         The timed prompt uses [Console]::KeyAvailable polling so it works
@@ -20,11 +23,21 @@ function Select-NamingMode {
     param (
         [switch]$Folder,
         [switch]$Gateway,
-        [switch]$NonInteractive
+        [switch]$NonInteractive,
+        [string]$FolderPath,
+        [string]$Username
     )
 
-    if ($Folder)         { return "User" }
-    if ($Gateway)        { return "Gateway" }
+    if ($Folder)  { return "User" }
+    if ($Gateway) { return "Gateway" }
+
+    # -FolderPath / -Username are User-mode inputs; their presence implies User
+    # mode unless an explicit -Folder/-Gateway switch was given above.
+    if ((-not [string]::IsNullOrWhiteSpace($FolderPath)) -or
+        (-not [string]::IsNullOrWhiteSpace($Username))) {
+        return "User"
+    }
+
     if ($NonInteractive) { return "Gateway" }
 
     Write-Host ""

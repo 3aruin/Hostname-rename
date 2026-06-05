@@ -20,8 +20,9 @@ Automates Windows device naming based on:
 ```
 Hostname-rename/
 ├── launcher.ps1        # Entry point — fetches, verifies, and runs everything
+├── logging.ps1         # Run logging (Initialize-Log / Write-Log) — never blocks a rename
 ├── network.ps1         # Gateway map and network context resolution
-├── device.ps1          # Device type detection, department, and serial number
+├── device.ps1          # Device type detection, department, serial, profile selection
 ├── naming.ps1          # Naming mode selection and name construction
 ├── rename.ps1          # Rename-DeviceSmart orchestrator
 └── tools/
@@ -132,6 +133,18 @@ iex (iwr "https://raw.githubusercontent.com/YOUR_ORG/Hostname-rename/COMMIT_SHA/
 )) -NonInteractive -Gateway
 ```
 
+### Dry Run
+
+Append `-WhatIf` to see the name that *would* be applied, with no rename and no restart:
+
+```powershell
+& ([scriptblock]::Create(
+    (iwr "https://raw.githubusercontent.com/YOUR_ORG/Hostname-rename/COMMIT_SHA/launcher.ps1").Content
+)) -NonInteractive -Gateway -WhatIf
+```
+
+> `-WhatIf` still self-elevates (the WMI queries and name construction run as normal); only the final `Rename-Computer` is gated.
+
 ### Available Parameters
 
 | Parameter | Type | Description |
@@ -139,8 +152,10 @@ iex (iwr "https://raw.githubusercontent.com/YOUR_ORG/Hostname-rename/COMMIT_SHA/
 | `-Gateway` | switch | Force Gateway naming mode |
 | `-Folder` | switch | Force User naming mode — selects a name from `C:\Users` profile folders |
 | `-NonInteractive` | switch | Suppress all prompts; for MDM / automated deployment |
-| `-FolderPath` | string | *(planned — v3.1)* Custom profile search path for User mode |
-| `-Username` | string | *(planned — v3.1)* Partial username to match in User mode |
+| `-FolderPath` | string | User mode: directory to search for profile folders instead of `C:\Users` (e.g. a redirected-profiles path). Supplying it implies User mode. |
+| `-Username` | string | User mode: partial name matched against profile folders (case-insensitive). Interactive shows the filtered list; NonInteractive picks the most recently active match. Supplying it implies User mode. |
+| `-LogPath` | string | Directory for the run log. Defaults to `%TEMP%\Hostname-Rename`. Logging never blocks a rename. |
+| `-WhatIf` | switch | Dry run — show the name that *would* be applied without renaming or restarting. |
 
 ---
 
@@ -179,28 +194,40 @@ Type is auto-detected at runtime using three parallel WMI queries. The detection
 |---|---|---|
 | `VM` | Virtual Machine | `Win32_ComputerSystem.Model` contains `"Virtual"` |
 | `SV` | Server | `Win32_OperatingSystem.ProductType` ≠ 1 (i.e. not Workstation) |
+| `TB` | Tablet / Convertible | `Win32_SystemEnclosure.ChassisTypes` contains `30` (Tablet) or `31` (Convertible) |
 | `MD` | Mobile / ARM | `Win32_Processor.Architecture` = `5` (ARM) |
-| `ET` | Thin Client / Endpoint Terminal | Manual override only — no WMI signal |
 | `LT` | Laptop | `Win32_ComputerSystem.Model` contains `"Laptop"` |
+| `PB` | Pizza Box (low-profile rack unit) | `Win32_SystemEnclosure.ChassisTypes` contains `5` |
+| `ET` | Thin Client / Endpoint Terminal | Manual override only — no WMI signal |
 | `DT` | Desktop | Default fallback |
-| `PB` | Pizza Box (low-profile rack unit) | *(planned — v3.1)* `Win32_SystemEnclosure.ChassisTypes` |
+
+> Priority is top-to-bottom for the auto-detected codes (`SV` is tested before the chassis codes so a server OS always wins; `TB` before `MD` so an ARM convertible is recorded by its form factor). `ET` is selectable only via the interactive override.
 
 In interactive mode the detected type is shown on screen and you can override it before the rename is applied.
 
 **To add a new auto-detected type:**
 
 1. Add its two-character code to `$script:DEVICE_TYPES` in `device.ps1`.
-2. Add a detection branch inside the `try` block in `Get-DeviceType`, before the `DT` fallback. The three WMI objects already in scope are:
+2. Add a branch to `Resolve-DeviceType` in `device.ps1`, before the `DT` fallback, in the right priority position. This pure function owns the decision chain and is unit-tested; `Get-DeviceType` only collects the WMI inputs and hands them over. The four values available are:
 
 | Variable | WMI Class | Useful properties |
 |---|---|---|
 | `$os` | `Win32_OperatingSystem` | `ProductType`, `Caption` |
 | `$cs` | `Win32_ComputerSystem` | `Model`, `PCSystemType` |
 | `$cpu` | `Win32_Processor` | `Architecture` |
+| `$enc` | `Win32_SystemEnclosure` | `ChassisTypes` |
 
-If you need a property not covered by those three classes (e.g. `Win32_SystemEnclosure.ChassisTypes` for rack/tower/tablet form factors), add a fourth parallel job following the existing pattern.
+If you need a property from a class not listed above, add a fifth parallel job in `Get-DeviceType` following the existing pattern and pass the value into `Resolve-DeviceType`.
 
-3. The interactive override prompt reads from `$script:DEVICE_TYPES`, so it will include the new code without any further changes.
+3. Add a Pester case to the `Resolve-DeviceType` block in `tests/Hostname-Rename.Tests.ps1`. The interactive override prompt reads from `$script:DEVICE_TYPES`, so it picks up the new code automatically.
+
+---
+
+## Logging
+
+Each run writes a timestamped log. By default it lands in `%TEMP%\Hostname-Rename` as `Hostname-Rename_<OLD-NAME>_<timestamp>.log`; pass `-LogPath` to send it elsewhere (a local folder or a UNC share, e.g. `-LogPath "\\fileserver\logs\renames"`).
+
+Logging is best-effort and **never blocks a rename**: if the directory can't be created or a write fails (an unreachable share, a permissions issue), the tool warns once and carries on. Under `-WhatIf` the intended rename is recorded as a `WhatIf:` line rather than performed.
 
 ---
 

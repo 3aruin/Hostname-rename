@@ -1,4 +1,4 @@
-﻿# tests/Hostname-Rename.Tests.ps1
+# tests/Hostname-Rename.Tests.ps1
 #
 # Pester v5 unit tests for Hostname-Rename.
 # Covers all pure-logic functions (no WMI / OS calls required).
@@ -9,13 +9,16 @@
 # CI runs this automatically on every push and PR via .github/workflows/ci.yml.
 
 BeforeAll {
-    # Dot-source modules directly -- no need for launcher or network access
+    # Dot-source modules directly -- no need for launcher or network access.
+    # device.ps1 now exposes the WMI-free helpers (Resolve-DeviceType,
+    # ConvertTo-SerialLast4, ConvertTo-CleanUserName) that these tests exercise
+    # directly, so the tests verify the real implementation rather than copies.
     . "$PSScriptRoot/../naming.ps1"
     . "$PSScriptRoot/../network.ps1"
     . "$PSScriptRoot/../device.ps1"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Describe "New-DeviceName" {
 
     Context "Full name fits within 15 characters" {
@@ -37,7 +40,7 @@ Describe "New-DeviceName" {
         }
     }
 
-    Context "Full name overflows — department is omitted" {
+    Context "Full name overflows -- department is omitted" {
 
         It "Drops department segment and warns when full name is 16 chars" {
             # AC01R-CSDT-A3F92 = 16 chars
@@ -51,17 +54,17 @@ Describe "New-DeviceName" {
         }
     }
 
-    Context "Both full and shortened overflow — throws" {
+    Context "Both full and shortened overflow -- throws" {
 
         It "Throws when even the shortened name exceeds 15 characters" {
-            # Pathological: ORG=AC, WH=01, LOC=R, Type=DT, Serial=TOOLONG9 → AC01R-DT-TOOLONG9 = 17
+            # Pathological: ORG=AC WH=01 LOC=R Type=DT Serial=TOOLONG9 -> AC01R-DT-TOOLONG9 = 17
             { New-DeviceName -ORG "AC" -WH "01" -LOC "R" -Department "CS" -Type "DT" -Serial "TOOLONG9" } |
                 Should -Throw
         }
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Describe "New-UserDeviceName" {
 
     It "Returns the full name when it fits within 15 chars" {
@@ -76,7 +79,7 @@ Describe "New-UserDeviceName" {
     }
 
     It "Truncates the name when result would exceed 15 chars" {
-        # "01R-JaneDoe12345" = 16 → truncate Name to 11
+        # "01R-JaneDoe12345" = 16 -> truncate Name to 11
         New-UserDeviceName -WH "01" -LOC "R" -Name "JaneDoe12345" |
             Should -Be "01R-JaneDoe1234"
     }
@@ -92,138 +95,116 @@ Describe "New-UserDeviceName" {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-Describe "Get-SerialLast4" {
+# -----------------------------------------------------------------------------
+Describe "ConvertTo-SerialLast4" {
 
     Context "Serial longer than 4 chars" {
-        It "Returns the last 4 chars of a cleaned 8-char serial" {
-            # Cleaned: VMWA3F9B2C1 -> last 4: B2C1
-            # Test cleaning + last-4 extraction via a helper wrapper.
-            # TODO (v3.1): refactor Get-SerialLast4 so the cleaning logic is in a
-            # standalone helper function callable without WMI -- then these
-            # tests can exercise the real implementation rather than a copy.
-            $fn = {
-                param($s)
-                $clean = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
-                if ($clean.Length -ge 4) { return $clean.Substring($clean.Length - 4) }
-                return $clean.PadLeft(4, '0')
-            }
-            & $fn "VMW-A3F9B2C1" | Should -Be "B2C1"
+        It "Returns the last 4 chars of a cleaned serial" {
+            ConvertTo-SerialLast4 "VMW-A3F9B2C1" | Should -Be "B2C1"
         }
-
         It "Strips hyphens and returns last 4" {
-            $fn = { param($s)
-                $c = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
-                if ($c.Length -ge 4) { return $c.Substring($c.Length - 4) }
-                return $c.PadLeft(4, '0') }
-            & $fn "SN-##-1234" | Should -Be "1234"
+            ConvertTo-SerialLast4 "SN-##-1234" | Should -Be "1234"
         }
-
         It "Normalises lowercase to uppercase" {
-            $fn = { param($s)
-                $c = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
-                if ($c.Length -ge 4) { return $c.Substring($c.Length - 4) }
-                return $c.PadLeft(4, '0') }
-            & $fn "abcd" | Should -Be "ABCD"
+            ConvertTo-SerialLast4 "abcd" | Should -Be "ABCD"
         }
     }
 
     Context "Serial shorter than 4 chars -- pad with leading zeros" {
-        # $script: scope is required because BeforeAll runs in a separate scope
-        # from the It blocks below -- without it, $fn is gone by the time the
-        # It blocks try to invoke it. Same pattern as the Get-UserName fix.
-        BeforeAll {
-            $script:fn = {
-                param($s)
-                $c = ($s -replace '[^A-Za-z0-9]', '').ToUpper()
-                if ($c.Length -ge 4) { return $c.Substring($c.Length - 4) }
-                return $c.PadLeft(4, '0')
-            }
-        }
-
-        It "3 chars -- left-pads to 4" {
-            & $script:fn "ABC"   | Should -Be "0ABC"
-        }
-        It "1 char -- left-pads to 4" {
-            & $script:fn "X"     | Should -Be "000X"
-        }
-        It "Empty string -- four zeros" {
-            & $script:fn ""      | Should -Be "0000"
-        }
-        It "All special chars -- four zeros" {
-            & $script:fn "---"   | Should -Be "0000"
-        }
+        It "3 chars -- left-pads to 4"      { ConvertTo-SerialLast4 "ABC" | Should -Be "0ABC" }
+        It "1 char -- left-pads to 4"       { ConvertTo-SerialLast4 "X"   | Should -Be "000X" }
+        It "Empty string -- four zeros"     { ConvertTo-SerialLast4 ""    | Should -Be "0000" }
+        It "All special chars -- four zeros" { ConvertTo-SerialLast4 "---" | Should -Be "0000" }
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-Describe "Get-UserName name cleaning" {
-
-    # Expose the cleaning logic via a scriptblock to test without hitting C:\Users.
-    # $script: scope is required because BeforeAll runs in a separate scope from
-    # the It blocks below — without it, the analyzer also flags the variable as
-    # assigned-but-never-used (PSUseDeclaredVarsMoreThanAssignments), which is a
-    # false positive caused by the cross-scope reference in Pester.
-    BeforeAll {
-        $script:clean = {
-            param($selected)
-            $c = $selected
-            foreach ($sep in '@', '_') {
-                $idx = $c.IndexOf($sep)
-                if ($idx -gt 0) { $c = $c.Substring(0, $idx) }
-            }
-            $c = ($c -replace '[^a-zA-Z0-9]', '')
-            if ($c.Length -eq 0) { throw "Empty after cleaning" }
-            $c.Substring(0, [Math]::Min(11, $c.Length))
-        }
-    }
+# -----------------------------------------------------------------------------
+Describe "ConvertTo-CleanUserName" {
 
     It "Strips @ suffix (standard UPN)" {
-        & $script:clean "jane.doe@contoso.com" | Should -Be "janedoe"
+        ConvertTo-CleanUserName "jane.doe@contoso.com" | Should -Be "janedoe"
     }
 
     It "Strips _ suffix (Entra joined UPN style)" {
-        & $script:clean "JaneDoe_contoso_com" | Should -Be "JaneDoe"
+        ConvertTo-CleanUserName "JaneDoe_contoso_com" | Should -Be "JaneDoe"
     }
 
     It "Leaves plain names unchanged" {
-        & $script:clean "JohnSmith" | Should -Be "JohnSmith"
+        ConvertTo-CleanUserName "JohnSmith" | Should -Be "JohnSmith"
     }
 
     It "Removes dots in prefix (UPN style: first.last)" {
-        & $script:clean "john.smith" | Should -Be "johnsmith"
+        ConvertTo-CleanUserName "john.smith" | Should -Be "johnsmith"
     }
 
     It "Truncates to 11 characters" {
-        & $script:clean "VeryLongNameHere" | Should -Be "VeryLongNam"
+        ConvertTo-CleanUserName "VeryLongNameHere" | Should -Be "VeryLongNam"
     }
 
     It "Result is never longer than 11 characters" {
-        (& $script:clean "AVeryVeryVeryLongFolderName").Length | Should -BeLessOrEqual 11
+        (ConvertTo-CleanUserName "AVeryVeryVeryLongFolderName").Length | Should -BeLessOrEqual 11
     }
 
-    It "Processes @ before _ — strips at @ first, then _ in remainder" {
-        # user_name@domain.com  → strip @  → user_name → strip _  → user
-        & $script:clean "user_name@domain.com" | Should -Be "user"
+    It "Processes @ before _ -- strips at @ first, then _ in remainder" {
+        # user_name@domain.com -> strip @ -> user_name -> strip _ -> user
+        ConvertTo-CleanUserName "user_name@domain.com" | Should -Be "user"
     }
 
     It "Throws when cleaned result is empty" {
-        { & $script:clean "___" } | Should -Throw
+        { ConvertTo-CleanUserName "___" } | Should -Throw
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+Describe "Resolve-DeviceType" {
+
+    It "VM when model contains Virtual" {
+        Resolve-DeviceType -Model "VMware Virtual Platform" -ProductType 1 | Should -Be "VM"
+    }
+    It "SV when ProductType is not 1" {
+        Resolve-DeviceType -Model "PowerEdge R740" -ProductType 3 | Should -Be "SV"
+    }
+    It "TB when chassis is Tablet (30)" {
+        Resolve-DeviceType -Model "Surface Pro" -ChassisTypes @(30) | Should -Be "TB"
+    }
+    It "TB when chassis is Convertible (31)" {
+        Resolve-DeviceType -Model "ThinkPad Yoga" -ChassisTypes @(31) | Should -Be "TB"
+    }
+    It "MD when architecture is ARM (5)" {
+        Resolve-DeviceType -Model "Generic" -Architecture 5 | Should -Be "MD"
+    }
+    It "LT when model contains Laptop" {
+        Resolve-DeviceType -Model "Some Laptop 5000" | Should -Be "LT"
+    }
+    It "PB when chassis is Pizza Box (5)" {
+        Resolve-DeviceType -Model "RackNode 1U" -ChassisTypes @(5) | Should -Be "PB"
+    }
+    It "DT as the default fallback" {
+        Resolve-DeviceType -Model "OptiPlex 7090" -ProductType 1 -Architecture 0 -ChassisTypes @(3) | Should -Be "DT"
+    }
+    It "Server beats tablet chassis (priority)" {
+        Resolve-DeviceType -Model "x" -ProductType 2 -ChassisTypes @(30) | Should -Be "SV"
+    }
+    It "Tablet beats ARM (priority)" {
+        Resolve-DeviceType -Model "x" -Architecture 5 -ChassisTypes @(31) | Should -Be "TB"
+    }
+    It "Always returns a 2-char code (default branch)" {
+        (Resolve-DeviceType -Model "x").Length | Should -Be 2
+    }
+}
+
+# -----------------------------------------------------------------------------
 Describe "Select-NamingMode switch precedence" {
 
-    It "-Folder → User mode" {
+    It "-Folder -> User mode" {
         Select-NamingMode -Folder | Should -Be "User"
     }
 
-    It "-Gateway → Gateway mode" {
+    It "-Gateway -> Gateway mode" {
         Select-NamingMode -Gateway | Should -Be "Gateway"
     }
 
-    It "-NonInteractive → Gateway mode" {
+    It "-NonInteractive -> Gateway mode" {
         Select-NamingMode -NonInteractive | Should -Be "Gateway"
     }
 
@@ -234,12 +215,28 @@ Describe "Select-NamingMode switch precedence" {
     It "-Folder takes priority over -NonInteractive" {
         Select-NamingMode -Folder -NonInteractive | Should -Be "User"
     }
+
+    It "-FolderPath implies User mode" {
+        Select-NamingMode -FolderPath "D:\Profiles" | Should -Be "User"
+    }
+
+    It "-Username implies User mode" {
+        Select-NamingMode -Username "jdoe" | Should -Be "User"
+    }
+
+    It "explicit -Gateway beats an implied -FolderPath" {
+        Select-NamingMode -Gateway -FolderPath "D:\Profiles" | Should -Be "Gateway"
+    }
+
+    It "implied User mode still applies in NonInteractive" {
+        Select-NamingMode -NonInteractive -Username "jdoe" | Should -Be "User"
+    }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Describe "Get-NetworkContext" {
 
-    Context "Known gateway — returns correct context" {
+    Context "Known gateway -- returns correct context" {
 
         It "Returns the right ORG/WH/LOC for a mapped gateway" {
             $result = Get-NetworkContext -Gateway "192.0.2.1"
@@ -249,7 +246,7 @@ Describe "Get-NetworkContext" {
         }
     }
 
-    Context "Null or empty gateway — always throws" {
+    Context "Null or empty gateway -- always throws" {
 
         It "Throws with a 'no gateway detected' message when gateway is empty" {
             { Get-NetworkContext -Gateway "" } |
@@ -262,7 +259,7 @@ Describe "Get-NetworkContext" {
         }
     }
 
-    Context "Unmapped gateway — NonInteractive throws" {
+    Context "Unmapped gateway -- NonInteractive throws" {
 
         It "Throws with actionable GATEWAY_MAP message in NonInteractive mode" {
             { Get-NetworkContext -Gateway "10.0.0.1" -NonInteractive } |
@@ -270,7 +267,7 @@ Describe "Get-NetworkContext" {
         }
     }
 
-    Context "Unmapped gateway — Interactive returns fallback" {
+    Context "Unmapped gateway -- Interactive returns fallback" {
 
         It "Returns FALLBACK_CONTEXT in interactive mode" {
             $result = Get-NetworkContext -Gateway "10.0.0.1"
@@ -281,12 +278,12 @@ Describe "Get-NetworkContext" {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-Describe "15-character NetBIOS limit — integration" {
+# -----------------------------------------------------------------------------
+Describe "15-character NetBIOS limit -- integration" {
 
     It "Gateway mode: all valid department+type combinations stay within 15 chars" {
         $depts  = @("CS","SR","OP","HQ","IT","WS")
-        $types  = @("VM","SV","MD","ET","LT","DT")
+        $types  = @("VM","SV","MD","ET","LT","DT","PB","TB")
         $serial = "A3F9"   # representative 4-char serial
 
         foreach ($dept in $depts) {

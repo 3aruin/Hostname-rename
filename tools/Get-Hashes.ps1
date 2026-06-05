@@ -7,7 +7,7 @@
 #   cd YOUR_REPO_ROOT
 #   .\tools\Get-Hashes.ps1
 
-$files = @("network.ps1", "device.ps1", "naming.ps1", "rename.ps1")
+$files = @("logging.ps1", "network.ps1", "device.ps1", "naming.ps1", "rename.ps1")
 $root  = Split-Path $PSScriptRoot -Parent
 
 ""

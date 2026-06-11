@@ -50,9 +50,7 @@ Hostname-rename/
 | `{TYPE}` | Two-character device type code |
 | `{SERIAL}` | Last four characters of the BIOS serial number |
 
-> **ORG must be two characters.** Windows enforces a 15-character NetBIOS limit on hostnames.
-> A full name with a two-character ORG uses all 15 characters: `AA00A-AABB-0000`.
-> A three-character ORG would overflow the limit before the department segment is even considered.
+> **ORG must be two characters.** Windows enforces a 15-character NetBIOS limit, and a two-character ORG already uses all 15: `AA00A-AABB-0000`. A three-character ORG overflows the limit.
 
 > If the full name exceeds 15 characters, the department segment is automatically dropped:
 > `{ORG}{WH}{LOC}-{TYPE}-{SERIAL}`
@@ -112,8 +110,7 @@ After any change to module files, regenerate the manifest from the repo root:
 
 Paste the output into the `$MANIFEST` block in `launcher.ps1`, commit all changes, and note the resulting commit SHA.
 
-> ⚠️ **Always pin to a full 40-character commit SHA in your deployment URL — never use `main` directly.**
-> A branch ref can be force-pushed; a commit SHA is immutable and is what makes the integrity check meaningful.
+> ⚠️ **Always pin to a full 40-character commit SHA in your deployment URL — never use `main`.** A branch ref can be force-pushed; a commit SHA is immutable, which makes the integrity check meaningful.
 
 ---
 
@@ -201,14 +198,14 @@ Type is auto-detected at runtime using three parallel WMI queries. The detection
 | `ET` | Thin Client / Endpoint Terminal | Manual override only — no WMI signal |
 | `DT` | Desktop | Default fallback |
 
-> Priority is top-to-bottom for the auto-detected codes (`SV` is tested before the chassis codes so a server OS always wins; `TB` before `MD` so an ARM convertible is recorded by its form factor). `ET` is selectable only via the interactive override.
+> Priority among the auto-detected codes is top-to-bottom: `SV` before the chassis codes so a server OS always wins, and `TB` before `MD` so an ARM convertible is recorded by its form factor.
 
 In interactive mode the detected type is shown on screen and you can override it before the rename is applied.
 
 **To add a new auto-detected type:**
 
 1. Add its two-character code to `$script:DEVICE_TYPES` in `device.ps1`.
-2. Add a branch to `Resolve-DeviceType` in `device.ps1`, before the `DT` fallback, in the right priority position. This pure function owns the decision chain and is unit-tested; `Get-DeviceType` only collects the WMI inputs and hands them over. The four values available are:
+2. Add a branch to `Resolve-DeviceType` in `device.ps1`, before the `DT` fallback, in the right priority position. This pure function owns the decision chain and is unit-tested; `Get-DeviceType` only collects the WMI inputs. The four values available are:
 
 | Variable | WMI Class | Useful properties |
 |---|---|---|
@@ -233,7 +230,5 @@ Logging is best-effort and **never blocks a rename**: if the directory can't be 
 
 ## Usage Notes
 
-- Run as needed to standardise device names across the network
 - Silent/MDM deployment is supported via `-NonInteractive -Gateway`
-- Device type is auto-detected; the interactive prompt allows an override before the rename is applied
 - If the detected gateway is not in `$GATEWAY_MAP`, the tool warns and uses fallback values — add the site before deploying to that network

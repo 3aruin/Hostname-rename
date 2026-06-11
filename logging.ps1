@@ -1,28 +1,13 @@
 # logging.ps1
-# Lightweight run logging for Hostname-Rename (OQ-001).
+# Run logging for Hostname-Rename. Loaded first by launcher.ps1 so the
+# orchestrator can log throughout a run.
 #
-# Loaded FIRST by launcher.ps1 so the orchestrator can log throughout a run.
-#
-# Initialize-Log chooses the destination (default %TEMP%\Hostname-Rename;
-# override the directory -- local or UNC -- with -LogPath). Write-Log appends
-# timestamped lines.
-#
-# Design rule: logging must NEVER block a rename. Initialisation failures
-# disable logging and warn; individual write failures are swallowed
-# (-ErrorAction SilentlyContinue). A device must still get renamed even if the
-# log share is unreachable.
+# Design rule: logging must NEVER block a rename. Init failures disable logging
+# and warn; write failures are swallowed (-ErrorAction SilentlyContinue) -- a
+# device must still be renamed even if the log share is unreachable.
 
 function Initialize-Log {
-    <#
-    .SYNOPSIS
-        Resolves and prepares the per-run log file. Defaults to
-        %TEMP%\Hostname-Rename; -LogPath overrides the directory.
-
-    .NOTES
-        Stores the resolved file in $script:LOG_FILE. On any failure, sets
-        $script:LOG_FILE to $null (logging disabled for the run) and warns.
-        Returns nothing -- callers do not branch on the result.
-    #>
+    # Resolves the per-run log file (default %TEMP%\Hostname-Rename; -LogPath overrides the dir).
     param (
         [string]$LogPath
     )
@@ -40,8 +25,7 @@ function Initialize-Log {
             New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null
         }
 
-        # Old computer name + timestamp keeps per-machine files distinct on a
-        # shared UNC and avoids concurrent-append contention.
+        # Old computer name + timestamp keeps per-machine files distinct on a shared UNC (avoids concurrent-append contention).
         $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
         $file  = "Hostname-Rename_{0}_{1}.log" -f $env:COMPUTERNAME, $stamp
         $script:LOG_FILE = Join-Path $dir $file
@@ -54,11 +38,7 @@ function Initialize-Log {
 }
 
 function Write-Log {
-    <#
-    .SYNOPSIS
-        Appends a timestamped line to the current run log. No-op when logging
-        was not initialised or failed. Never throws and never blocks.
-    #>
+    # Appends a timestamped line to the run log; no-op if uninitialised. Never throws or blocks.
     param (
         [Parameter(Mandatory)]
         [string]$Message,
@@ -71,7 +51,6 @@ function Write-Log {
 
     $line = "{0} [{1}] {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Level, $Message
 
-    # SilentlyContinue (not try/catch) so a transient write failure -- e.g. a UNC
-    # share dropping mid-run -- degrades to "no log line" instead of aborting.
+    # SilentlyContinue (not try/catch) so a transient write failure degrades to "no log line", not an abort.
     Add-Content -LiteralPath $script:LOG_FILE -Value $line -ErrorAction SilentlyContinue
 }

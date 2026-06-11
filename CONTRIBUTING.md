@@ -1,6 +1,6 @@
 # Contributing to Hostname-Rename
 
-Thank you for your interest in contributing. This document covers two things:
+This document covers two things:
 
 1. **Deploying the tool** — the exact steps to go from a code change to a safe production URL
 2. **Contributing code** — how to submit bug fixes, new features, or documentation improvements
@@ -11,7 +11,7 @@ Thank you for your interest in contributing. This document covers two things:
 
 > This applies to anyone deploying from a fork, or to the canonical repo maintainer after any change to module files.
 
-The integrity model depends on pinning your deployment URL to a specific commit SHA and keeping `$MANIFEST` hashes in sync. The steps below are the minimum safe path every time.
+The integrity model depends on pinning your deployment URL to a specific commit SHA and keeping `$MANIFEST` hashes in sync.
 
 ### After any change to module files (`logging.ps1`, `network.ps1`, `device.ps1`, `naming.ps1`, `rename.ps1`)
 
@@ -39,9 +39,9 @@ run (module files unchanged). You still need a new SHA for the URL.
 
 1. Fork on GitHub
 2. In `launcher.ps1`, update `$REPO_BASE` to point to your fork:
-   ```powershell
+```powershell
    $REPO_BASE = "https://raw.githubusercontent.com/YOUR_ORG/Hostname-rename"
-   ```
+```
 3. In `network.ps1`, replace the RFC 5737 example IPs in `$GATEWAY_MAP` with your
    real site gateway IPs
 4. Follow the full Deployment Workflow above
@@ -92,8 +92,7 @@ $script:VALID_DEPARTMENTS = @("CS", "SR", "OP", "HQ", "IT", "WS", "MK")
 
 ### Externalising `$GATEWAY_MAP` to a separate file
 
-For teams managing many sites, you may want the map in its own file rather than
-inline in `network.ps1`. One approach:
+To put the map in its own file rather than inline in `network.ps1`:
 
 ```powershell
 # config.ps1  (add to $MODULES in launcher.ps1 before network.ps1)
@@ -131,9 +130,9 @@ Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed
 
 3. **Before opening a PR:**
    - Run PSScriptAnalyzer locally and resolve any warnings:
-     ```powershell
+```powershell
      Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning
-     ```
+```
    - Run the Pester suite and confirm it passes
    - If you changed any module file, re-run `Get-Hashes.ps1` and commit the
      updated `$MANIFEST` in the same PR
@@ -153,13 +152,11 @@ Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed
 - No third-party module dependencies (ADR-005)
 - All interactive prompts must have a `-NonInteractive` bypass path
 - Functions that accept `-NonInteractive` must never call `Read-Host` under that flag
-- **Keep files ASCII-only.** As of v3.1 every file is plain ASCII and carries no
-  BOM. Use `--` instead of em dashes, `->` instead of arrows, and avoid box-drawing
-  or fancy quotes in code and comments. A single non-ASCII character forces a UTF-8
-  BOM (Windows PowerShell 5.1 otherwise reads the file as Latin-1 and garbles it),
-  which the `PSUseBOMForUnicodeEncodedFile` analyzer rule then flags — this bit us
-  twice in v3.0.1 (DECISIONS.md → BUG-009, BUG-010). Markdown docs may use Unicode
-  freely; the rule applies to `.ps1` files.
+- **Keep `.ps1` files ASCII-only, no BOM.** Use `--` instead of em dashes, `->`
+  instead of arrows, and avoid box-drawing or fancy quotes in code and comments.
+  A single non-ASCII character forces a UTF-8 BOM (Windows PowerShell 5.1 otherwise
+  reads the file as Latin-1 and garbles it), which the `PSUseBOMForUnicodeEncodedFile`
+  rule then flags. Markdown docs may use Unicode freely.
 - Empty `catch` blocks trip `PSAvoidUsingEmptyCatchBlock`; prefer
   `-ErrorAction SilentlyContinue` on the call, or put a real statement
   (e.g. `Write-Verbose`) in the `catch`
@@ -168,7 +165,7 @@ Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed
 
 ## Shipped in v3.1
 
-All previously-planned v3.1 work is now released (see CHANGELOG.md → [3.1.0]):
+See CHANGELOG.md → [3.1.0]:
 
 | Item | Status |
 |---|---|

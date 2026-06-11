@@ -12,7 +12,7 @@ For a full project overview, start with [`README.md`](README.md).
 
 | File | Purpose |
 |---|---|
-| [`launcher.ps1`](launcher.ps1) | Fetches all modules over HTTPS, verifies SHA-256 hashes against `$MANIFEST`, self-elevates via UAC, dot-sources modules, and hands off to `Rename-DeviceSmart`. This is the file pinned in the `iwr` deployment URL. |
+| [`launcher.ps1`](launcher.ps1) | Fetches all modules over HTTPS, verifies SHA-256 hashes against `$MANIFEST`, self-elevates via UAC, dot-sources modules, and hands off to `Rename-DeviceSmart`. Pinned in the `iwr` deployment URL. |
 
 ### Modules (dot-sourced by `launcher.ps1`)
 
@@ -86,7 +86,7 @@ For a full project overview, start with [`README.md`](README.md).
 
 ## Load order at runtime
 
-When `launcher.ps1` runs, modules are dot-sourced in this order. The orchestrator depends on all three preceding modules.
+Modules are dot-sourced in this order:
 
 ```
 launcher.ps1
@@ -101,4 +101,4 @@ launcher.ps1
 
 ## Current version
 
-**v3.1.0** — feature release: `-FolderPath`/`-Username`, `PB`+`TB` device types, `-WhatIf`, and run logging. See [`CHANGELOG.md`](CHANGELOG.md) for the full release notes and [`DECISIONS.md`](DECISIONS.md) for the audit trail behind it.
+**v3.1.0** — feature release: `-FolderPath`/`-Username`, `PB`+`TB` device types, `-WhatIf`, and run logging. See [`CHANGELOG.md`](CHANGELOG.md) for release notes and [`DECISIONS.md`](DECISIONS.md) for the audit trail.

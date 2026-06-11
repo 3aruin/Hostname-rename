@@ -3,23 +3,9 @@
 # Depends on: network.ps1 (Get-NetworkContext)
 
 function Select-NamingMode {
-    <#
-    .SYNOPSIS
-        Determines whether to name the device by gateway (dept/type/serial) or
-        by user profile (location + employee name).
-
-        Explicit -Folder / -Gateway switches take top priority. Supplying
-        -FolderPath or -Username (without an explicit switch) implies User mode.
-        Otherwise NonInteractive defaults to Gateway, and interactive sessions
-        get an 8-second timed prompt that defaults to Gateway.
-
-    .NOTES
-        The timed prompt uses [Console]::KeyAvailable polling so it works
-        correctly in a console session. Start-Job { Read-Host } cannot receive
-        console input and must not be used here.
-    #>
+    # Selects naming mode: Gateway (dept/type/serial) or User (location + profile name).
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
-        Justification = 'Interactive mode-selection prompt -- must write to host stream so output is not captured downstream')]
+        Justification = 'Interactive prompt -- must write to host stream.')]
     param (
         [switch]$Folder,
         [switch]$Gateway,
@@ -31,8 +17,7 @@ function Select-NamingMode {
     if ($Folder)  { return "User" }
     if ($Gateway) { return "Gateway" }
 
-    # -FolderPath / -Username are User-mode inputs; their presence implies User
-    # mode unless an explicit -Folder/-Gateway switch was given above.
+    # -FolderPath / -Username imply User mode unless an explicit switch was given above.
     if ((-not [string]::IsNullOrWhiteSpace($FolderPath)) -or
         (-not [string]::IsNullOrWhiteSpace($Username))) {
         return "User"
@@ -47,6 +32,7 @@ function Select-NamingMode {
     Write-Host ""
     Write-Host "Press 1 or 2 -- defaulting to Gateway in 8 seconds..."
 
+    # Poll [Console]::KeyAvailable -- Start-Job { Read-Host } can't read console input.
     $deadline = [DateTime]::Now.AddSeconds(8)
     $keyChar  = $null
 
@@ -69,18 +55,9 @@ function Select-NamingMode {
 }
 
 function New-DeviceName {
-    <#
-    .SYNOPSIS
-        Assembles the Gateway-mode device name from its components.
-
-    .NOTES
-        Format:  {ORG}{WH}{LOC}-{Dept}{Type}-{Serial}   (max 15 chars)
-        If the full name exceeds 15 characters, the department segment is dropped:
-                 {ORG}{WH}{LOC}-{Type}-{Serial}
-        Throws if even the shortened form exceeds 15 characters.
-    #>
+    # Builds the Gateway-mode name {ORG}{WH}{LOC}-{Dept}{Type}-{Serial} (max 15 chars; drops Dept on overflow).
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
-        Justification = 'Pure function -- assembles a string from parameters and returns it. Does not change any system state. Verb New- is correct per Get-Verb (it produces a new value).')]
+        Justification = 'Pure string-builder; no state change. New- verb is correct.')]
     param (
         [string]$ORG,
         [string]$WH,
@@ -103,18 +80,9 @@ function New-DeviceName {
 }
 
 function New-UserDeviceName {
-    <#
-    .SYNOPSIS
-        Assembles the User-mode device name from location and employee name.
-
-    .NOTES
-        Format:  {WH}{LOC}-{Name}   (max 15 chars)
-        Example: 01R-JaneDoe
-        Name is already truncated to 11 chars by Get-UserName, but a safety
-        check is applied here as well.
-    #>
+    # Builds the User-mode name {WH}{LOC}-{Name} (max 15 chars).
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
-        Justification = 'Pure function -- assembles a string from parameters and returns it. Does not change any system state.')]
+        Justification = 'Pure string-builder; no state change.')]
     param (
         [string]$WH,
         [string]$LOC,

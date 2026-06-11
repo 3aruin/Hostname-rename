@@ -9,9 +9,9 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseUsingScopeModifierInNewRunspaces', '',
-    Justification = 'False positive on the Start-Job ScriptBlock around line 150. The block uses param($u) plus -ArgumentList $url to pass the URL into the job, which is the idiomatic and preferred pattern. The analyzer cannot see that $u inside the script block is the param, not an outer-scope reference. Switching to $using: would be wrong here.')]
+    Justification = 'Start-Job block takes $u via param()/-ArgumentList; $using: would be wrong here.')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '',
-    Justification = 'SupportsShouldProcess is declared so -WhatIf can be accepted through the iex/scriptblock deployment surface and forwarded to Rename-DeviceSmart, which owns the actual ShouldProcess gate on Rename-Computer. The launcher itself only fetches modules and self-elevates; the single state change (the rename) is gated downstream.')]
+    Justification = 'Launcher only fetches/elevates; -WhatIf is forwarded to Rename-DeviceSmart, which owns the ShouldProcess gate.')]
 param (
     [switch]$Folder,
     [switch]$Gateway,
@@ -24,20 +24,15 @@ param (
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# -- Config -------------------------------------------------------------------
-# For production/MDM: replace REPLACE_WITH_COMMIT_SHA with a real commit SHA
-# and fill in $MANIFEST hashes by running .\tools\Get-Hashes.ps1.
-# See README.md -> Deployment Workflow for the full step-by-step.
-
+# -- Config --
+# Production/MDM: set $COMMIT_SHA to a real SHA and fill $MANIFEST via .\tools\Get-Hashes.ps1 (see README -> Deployment Workflow).
 $REPO_BASE  = "https://raw.githubusercontent.com/3aruin/Hostname-rename"
 $COMMIT_SHA = "REPLACE_WITH_COMMIT_SHA"
 
 # logging.ps1 loads first so the orchestrator can log throughout the run.
 $MODULES = @("logging.ps1", "network.ps1", "device.ps1", "naming.ps1", "rename.ps1")
 
-# Expected SHA-256 hashes for each module.
-# Regenerate with .\tools\Get-Hashes.ps1 after any change, then commit.
-# (Ordered to match Get-Hashes.ps1 output for a clean paste.)
+# SHA-256 per module; regenerate via .\tools\Get-Hashes.ps1 after any change. [ordered] matches its output for a clean paste.
 $MANIFEST = [ordered]@{
     "logging.ps1" = "REPLACE_WITH_HASH"
     "network.ps1" = "REPLACE_WITH_HASH"
@@ -45,19 +40,10 @@ $MANIFEST = [ordered]@{
     "naming.ps1"  = "REPLACE_WITH_HASH"
     "rename.ps1"  = "REPLACE_WITH_HASH"
 }
-# -----------------------------------------------------------------------------
 
-# -- Elevation ----------------------------------------------------------------
+# -- Elevation --
 function Invoke-SelfElevation {
-    <#
-    .SYNOPSIS
-        Relaunches the script as administrator if not already elevated.
-    .PARAMETER FallbackUrl
-        URL to re-download and invoke when running via iex (no $PSCommandPath).
-    .PARAMETER ScriptParams
-        The calling script's $PSBoundParameters hashtable, forwarded to the
-        elevated process so all parameter values survive the relaunch.
-    #>
+    # Relaunch as admin if not already elevated; bound params are forwarded so they survive the relaunch.
     [CmdletBinding()]
     param(
         [string]$FallbackUrl,
@@ -72,11 +58,7 @@ function Invoke-SelfElevation {
 
     Write-Verbose "Elevation required. Relaunching as Administrator..."
 
-    # Build argument list from the caller's bound parameters. Parameter names and
-    # bare switches stay unquoted; VALUES are single-quoted (and embedded quotes
-    # doubled) so a value containing spaces -- e.g. -FolderPath "D:\User Profiles"
-    # -- survives both the array (-File) and string (-Command / wt.exe) relaunch
-    # paths intact.
+    # Single-quote values (doubling embedded quotes) so a value with spaces survives both relaunch paths; names/switches stay unquoted.
     $argList = @()
     foreach ($entry in $ScriptParams.GetEnumerator()) {
         if ($entry.Value -is [switch]) {
@@ -127,7 +109,6 @@ function Invoke-SelfElevation {
     Start-Process $processCmd -ArgumentList $finalArgs -Verb RunAs
     return $true
 }
-# -----------------------------------------------------------------------------
 
 # Resolve the ref before elevation so the fallback URL is always correct
 $ref = $COMMIT_SHA
@@ -136,14 +117,13 @@ if ($ref -eq "REPLACE_WITH_COMMIT_SHA") {
     $ref = "main"
 }
 
-# Elevate if needed. The fallback URL re-downloads this launcher in the elevated
-# session so iex-based runs survive the UAC hop without losing parameters.
+# Elevate if needed; the fallback URL re-downloads this launcher so iex runs survive the UAC hop with their params.
 $launcherUrl = "$REPO_BASE/$ref/launcher.ps1"
 if (Invoke-SelfElevation -FallbackUrl $launcherUrl -ScriptParams $PSBoundParameters) {
-    exit  # Non-elevated session exits; the new elevated session carries on
+    exit  # Non-elevated session exits; the elevated one carries on
 }
 
-# Kick off all module fetches simultaneously
+# Fetch all modules in parallel
 $jobs = [ordered]@{}
 foreach ($FileName in $MODULES) {
     $url = "$REPO_BASE/$ref/$FileName"
@@ -182,8 +162,7 @@ foreach ($FileName in $MODULES) {
     . ([scriptblock]::Create($content))
 }
 
-# Hand off to the orchestrator. -WhatIf:$WhatIfPreference forwards a launcher-level
-# dry run down to where the ShouldProcess gate actually lives.
+# Hand off to the orchestrator; -WhatIf:$WhatIfPreference forwards a dry run to the ShouldProcess gate downstream.
 Rename-DeviceSmart `
     -Folder:$Folder `
     -Gateway:$Gateway `

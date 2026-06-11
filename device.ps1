@@ -2,19 +2,12 @@
 # Handles: department selection, device type detection, serial number retrieval,
 #          and user profile name resolution (for User naming mode)
 
-# -- Valid Values -------------------------------------------------------------
-# Extend these arrays as new departments or device classes are introduced.
-
+# -- Valid values
 $script:VALID_DEPARTMENTS = @("CS", "SR", "OP", "HQ", "IT", "WS")
 $script:DEVICE_TYPES      = @("VM", "SV", "MD", "ET", "LT", "DT", "PB", "TB")
-# -----------------------------------------------------------------------------
 
 function Get-Department {
-    <#
-    .SYNOPSIS
-        Prompts the user to enter a valid department code.
-        Returns "WS" immediately in NonInteractive mode.
-    #>
+    # Prompts for a valid department code; returns "WS" in NonInteractive mode.
     param (
         [switch]$NonInteractive
     )
@@ -30,26 +23,8 @@ function Get-Department {
 }
 
 function Resolve-DeviceType {
-    <#
-    .SYNOPSIS
-        Pure decision logic that maps already-collected WMI values to a device
-        type code. WMI-free and unit-testable -- Get-DeviceType collects the
-        inputs, this function owns the priority chain.
-
-    .NOTES
-        Priority order (first match wins):
-          VM  Model contains "Virtual"
-          SV  ProductType is not 1 (not a Workstation OS)
-          TB  ChassisTypes contains 30 (Tablet) or 31 (Convertible)
-          MD  Architecture is 5 (ARM)
-          LT  Model contains "Laptop"
-          PB  ChassisTypes contains 5 (Pizza Box)
-          DT  default fallback
-
-        TB is checked before MD so an ARM convertible (e.g. some Surface models)
-        is recorded by its more descriptive form factor. SV is checked before the
-        chassis tests so a server OS always wins regardless of enclosure.
-    #>
+    # Pure, unit-testable: maps collected WMI values to a device-type code via the priority chain below.
+    # SV before the chassis tests so a server OS always wins; TB before MD so an ARM convertible keeps its form factor.
     param (
         [string]$Model,
         [int]$ProductType  = 1,
@@ -67,33 +42,17 @@ function Resolve-DeviceType {
 }
 
 function Get-DeviceType {
-    <#
-    .SYNOPSIS
-        Auto-detects device type from WMI, then optionally allows an override.
-
-    .NOTES
-        Fires four CIM queries in parallel and hands the results to
-        Resolve-DeviceType (which owns the priority chain). The WMI objects in
-        scope for any new detection logic are:
-          $os  Win32_OperatingSystem  -- ProductType, Caption
-          $cs  Win32_ComputerSystem   -- Model, PCSystemType
-          $cpu Win32_Processor        -- Architecture
-          $enc Win32_SystemEnclosure  -- ChassisTypes
-
-        All jobs are captured into $jobs before the try block so the finally
-        clause can always clean them up, even if a query throws mid-flight.
-    #>
+    # Auto-detects device type from WMI (parallel CIM queries -> Resolve-DeviceType), then allows an interactive override.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
-        Justification = 'Interactive prompt header -- must write to host so output is not captured downstream when paired with Read-Host')]
+        Justification = 'Interactive prompt header paired with Read-Host -- must write to host, not the success stream.')]
     param (
         [switch]$NonInteractive
     )
 
-    $type = "DT"    # default
-    $jobs = @()     # declared outside try so finally can always reference it
+    $type = "DT"
+    $jobs = @()     # declared before try so finally can always reach it
 
     try {
-        # Fire all CIM queries simultaneously -- cuts detection time substantially
         $jobs = @(
             (Get-CimInstance Win32_OperatingSystem -AsJob),
             (Get-CimInstance Win32_ComputerSystem  -AsJob),
@@ -106,9 +65,7 @@ function Get-DeviceType {
         $cpu = $jobs[2] | Wait-Job | Receive-Job
         $enc = $jobs[3] | Wait-Job | Receive-Job
 
-        # Win32_SystemEnclosure may return more than one instance; flatten the
-        # ChassisTypes arrays into a single list. @() keeps it an array even when
-        # $enc is $null, which would otherwise throw under Set-StrictMode -Latest.
+        # Win32_SystemEnclosure may return multiple instances; flatten. @() keeps it an array even if $enc is $null (StrictMode-safe).
         $chassis = @($enc | ForEach-Object { $_.ChassisTypes })
 
         $type = Resolve-DeviceType `
@@ -119,7 +76,6 @@ function Get-DeviceType {
     } catch {
         Write-Warning "WMI query failed during device type detection -- defaulting to DT."
     } finally {
-        # Clean up all job objects regardless of how the try block exited
         $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
     }
 
@@ -135,12 +91,7 @@ function Get-DeviceType {
 }
 
 function ConvertTo-SerialLast4 {
-    <#
-    .SYNOPSIS
-        Cleans a raw serial string and returns its last 4 alphanumeric
-        characters, left-padded with zeros when fewer than 4 remain.
-        WMI-free and unit-testable.
-    #>
+    # Cleans a serial and returns its last 4 alphanumerics, left-padded with zeros if fewer than 4 remain. WMI-free.
     param (
         [string]$Serial
     )
@@ -155,32 +106,14 @@ function ConvertTo-SerialLast4 {
 }
 
 function Get-SerialLast4 {
-    <#
-    .SYNOPSIS
-        Returns the last 4 alphanumeric characters of the BIOS serial number.
-        The cleaning/padding logic lives in ConvertTo-SerialLast4 so it can be
-        tested without a real device.
-    #>
+    # Last 4 alphanumerics of the BIOS serial; cleaning/padding in ConvertTo-SerialLast4.
     $serial = (Get-CimInstance Win32_BIOS).SerialNumber
     return ConvertTo-SerialLast4 -Serial $serial
 }
 
 function ConvertTo-CleanUserName {
-    <#
-    .SYNOPSIS
-        Cleans a profile folder name into a device-name-safe token.
-        WMI/filesystem-free and unit-testable.
-
-    .NOTES
-        Steps:
-          1. Strip from the first @ or _ onward
-             (Entra UPN suffixes: jane.doe@contoso.com, JaneDoe_contoso.com)
-          2. Remove any remaining non-alphanumeric characters
-             (also removes dots: jane.doe -> janedoe)
-          3. Truncate to 11 characters
-             (maximum that fits {WH}{LOC}-{NAME} within the 15-char limit)
-        Throws if cleaning leaves an empty string.
-    #>
+    # Cleans a profile folder name into a device-name-safe token: strips Entra UPN suffix at @ or _, drops non-alphanumerics.
+    # Truncates to 11 -- the max that fits {WH}{LOC}-{NAME} within 15 chars. Throws if nothing remains.
     param (
         [string]$Name
     )
@@ -201,23 +134,10 @@ function ConvertTo-CleanUserName {
 }
 
 function Get-UserName {
-    <#
-    .SYNOPSIS
-        Selects a profile folder and returns its cleaned name (via
-        ConvertTo-CleanUserName) for use in a device name.
-
-    .NOTES
-        Search path defaults to C:\Users; override with -FolderPath (e.g. a
-        redirected-profiles location). -Username narrows the candidates by
-        case-insensitive partial match:
-          - Interactive    : the filtered list is shown to choose from.
-          - NonInteractive : the most recently active match is chosen.
-        With no -Username, NonInteractive picks the most recently active profile
-        overall. Name cleaning is delegated to ConvertTo-CleanUserName so the
-        logic is unit-tested without touching the filesystem.
-    #>
+    # Selects a profile folder and returns its cleaned name (via ConvertTo-CleanUserName).
+    # -FolderPath overrides the C:\Users search root; -Username partial-matches candidates (interactive lists matches, NonInteractive picks the most recently active).
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
-        Justification = 'Interactive numbered profile list -- must write to host so output is not captured downstream when paired with Read-Host')]
+        Justification = 'Interactive numbered profile list paired with Read-Host -- must write to host, not the success stream.')]
     param (
         [switch]$NonInteractive,
         [string]$FolderPath,
@@ -230,14 +150,13 @@ function Get-UserName {
         throw "Profile search path '$root' does not exist. Check -FolderPath or use Gateway mode."
     }
 
-    # Well-known Windows system profile folders that are never valid user names
+    # Windows system profile folders -- never valid user names
     $systemFolders = @(
         "Public", "Default", "DefaultAppPool", "defaultuser0",
         "Administrator", "Guest", "WDAGUtilityAccount"
     )
 
-    # @() forces an array even when Get-ChildItem returns a single object,
-    # which would otherwise cause .Count to throw under Set-StrictMode -Version Latest
+    # @() forces an array even when Get-ChildItem returns one object; .Count would otherwise throw under StrictMode.
     $profiles = @(
         Get-ChildItem -Path $root -Directory |
             Where-Object { $_.Name -notin $systemFolders } |
@@ -248,7 +167,6 @@ function Get-UserName {
         throw "No user profile folders found under '$root'."
     }
 
-    # Narrow by -Username (case-insensitive partial match) when supplied
     if (-not [string]::IsNullOrWhiteSpace($Username)) {
         $profiles = @($profiles | Where-Object { $_.Name -like "*$Username*" })
         if ($profiles.Count -eq 0) {
@@ -257,7 +175,6 @@ function Get-UserName {
     }
 
     if ($NonInteractive) {
-        # Most recently active (of the matches, if -Username narrowed the set)
         $selected = $profiles[0].Name
         Write-Host "Auto-selected profile: $selected"
     } else {

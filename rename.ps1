@@ -3,60 +3,10 @@
 # and naming.ps1 in the correct order to produce and apply a device name.
 
 function Rename-DeviceSmart {
-    <#
-    .SYNOPSIS
-        Renames this computer according to the standard naming convention.
-
-    .PARAMETER Folder
-        Use User naming mode: derives location from the gateway and the name from
-        a chosen profile folder. Produces {WH}{LOC}-{Name}.
-
-    .PARAMETER Gateway
-        Use Gateway naming mode: derives location, dept, type, and serial from
-        the network gateway. Produces {ORG}{WH}{LOC}-{DEPT}{TYPE}-{SERIAL}.
-
-    .PARAMETER NonInteractive
-        Suppresses all prompts. Defaults to Gateway mode. In User mode, picks
-        the most recently active profile automatically.
-
-    .PARAMETER FolderPath
-        User mode only. Directory to search for profile folders instead of
-        C:\Users (e.g. a redirected-profiles path). Defaults to C:\Users.
-        Supplying it implies User mode.
-
-    .PARAMETER Username
-        User mode only. Partial name to match against profile folders. Interactive
-        mode shows the matches as a filtered list; NonInteractive mode chooses the
-        most recently active match. Supplying it implies User mode.
-
-    .PARAMETER LogPath
-        Directory for the run log. Defaults to %TEMP%\Hostname-Rename. Logging
-        never blocks a rename -- if the path cannot be written, the rename still
-        proceeds.
-
-    .EXAMPLE
-        # Interactive -- prompts for mode, then guides through the rest
-        Rename-DeviceSmart
-
-    .EXAMPLE
-        # Force User naming mode interactively
-        Rename-DeviceSmart -Folder
-
-    .EXAMPLE
-        # Headless / MDM deployment (Gateway mode)
-        Rename-DeviceSmart -NonInteractive -Gateway
-
-    .EXAMPLE
-        # Dry run -- show the name that would be applied, without renaming
-        Rename-DeviceSmart -NonInteractive -Gateway -WhatIf
-
-    .EXAMPLE
-        # User mode against a custom profile path, matching a partial name
-        Rename-DeviceSmart -Folder -FolderPath "D:\Profiles" -Username "jdoe"
-    #>
+    # Renames this computer per the standard naming convention -- Gateway or User mode.
     [CmdletBinding(SupportsShouldProcess)]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
-        Justification = 'Interactive confirmation prompt -- proposed name and status messages must reach the user terminal directly')]
+        Justification = 'Interactive prompt and status output must reach the host stream directly.')]
     param (
         [switch]$Folder,
         [switch]$Gateway,
@@ -70,9 +20,7 @@ function Rename-DeviceSmart {
     Write-Log -Level INFO -Message ("Run started. NonInteractive={0} Folder={1} Gateway={2}" -f `
         [bool]$NonInteractive, [bool]$Folder, [bool]$Gateway)
 
-    # Always resolve gateway first -- provides location for both modes.
-    # NonInteractive is forwarded so Get-NetworkContext can throw on an unmapped
-    # gateway rather than silently producing a fallback name in an automated deployment.
+    # Resolve gateway first (both modes need location); NonInteractive forwarded so an unmapped gateway throws instead of falling back.
     $gatewayIP = Get-DefaultGateway
     Write-Log -Level INFO -Message "Default gateway: '$gatewayIP'"
 
@@ -89,13 +37,13 @@ function Rename-DeviceSmart {
     Write-Log -Level INFO -Message "Naming mode: $mode"
 
     if ($mode -eq "User") {
-        # -- User mode: {WH}{LOC}-{Name} --
+        # User mode: {WH}{LOC}-{Name}
         $userName = Get-UserName -NonInteractive:$NonInteractive -FolderPath $FolderPath -Username $Username
         Write-Log -Level INFO -Message "Selected user token: $userName"
         $newName  = New-UserDeviceName -WH $ctx.WH -LOC $ctx.LOC -Name $userName
 
     } else {
-        # -- Gateway mode: {ORG}{WH}{LOC}-{DEPT}{TYPE}-{SERIAL} --
+        # Gateway mode: {ORG}{WH}{LOC}-{DEPT}{TYPE}-{SERIAL}
         $dept   = Get-Department -NonInteractive:$NonInteractive
         $type   = Get-DeviceType -NonInteractive:$NonInteractive
         $serial = Get-SerialLast4
@@ -115,8 +63,7 @@ function Rename-DeviceSmart {
     Write-Host ""
     Write-Log -Level INFO -Message "Proposed name: $newName"
 
-    # Interactive confirmation is skipped under -WhatIf (ShouldProcess emits the
-    # What-If line) and under -NonInteractive. Otherwise prompt before proceeding.
+    # Skip the Y/N prompt under -WhatIf (ShouldProcess prints the What-If line) and -NonInteractive.
     $proceed = $NonInteractive -or $WhatIfPreference
     if (-not $proceed) {
         $answer  = Read-Host "Rename to '$newName' and restart? (Y/N)"
@@ -133,8 +80,7 @@ function Rename-DeviceSmart {
         Write-Log -Level INFO -Message "Renaming '$env:COMPUTERNAME' -> '$newName'; restarting."
         Rename-Computer -NewName $newName -Force -Restart
     } else {
-        # Reached under -WhatIf: ShouldProcess returned $false and printed the
-        # "What if:" line. No state change.
+        # -WhatIf path: ShouldProcess returned $false and printed the What-If line; no state change.
         Write-Log -Level INFO -Message "WhatIf: would rename '$env:COMPUTERNAME' -> '$newName'."
     }
 }

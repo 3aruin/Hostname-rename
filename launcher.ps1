@@ -16,6 +16,7 @@ param (
     [switch]$Folder,
     [switch]$Gateway,
     [switch]$NonInteractive,
+    [switch]$Gui,
     [string]$FolderPath,
     [string]$Username,
     [string]$LogPath
@@ -30,7 +31,9 @@ $REPO_BASE  = "https://raw.githubusercontent.com/3aruin/Hostname-rename"
 $COMMIT_SHA = "REPLACE_WITH_COMMIT_SHA"
 
 # logging.ps1 loads first so the orchestrator can log throughout the run.
-$MODULES = @("logging.ps1", "network.ps1", "device.ps1", "naming.ps1", "rename.ps1")
+# gui.ps1 loads after naming.ps1 (its live preview calls the name builders)
+# and before rename.ps1 (which calls Show-RenameGui).
+$MODULES = @("logging.ps1", "network.ps1", "device.ps1", "naming.ps1", "gui.ps1", "rename.ps1")
 
 # SHA-256 per module; regenerate via .\tools\Get-Hashes.ps1 after any change. [ordered] matches its output for a clean paste.
 $MANIFEST = [ordered]@{
@@ -38,6 +41,7 @@ $MANIFEST = [ordered]@{
     "network.ps1" = "REPLACE_WITH_HASH"
     "device.ps1"  = "REPLACE_WITH_HASH"
     "naming.ps1"  = "REPLACE_WITH_HASH"
+    "gui.ps1"     = "REPLACE_WITH_HASH"
     "rename.ps1"  = "REPLACE_WITH_HASH"
 }
 
@@ -167,6 +171,7 @@ Rename-DeviceSmart `
     -Folder:$Folder `
     -Gateway:$Gateway `
     -NonInteractive:$NonInteractive `
+    -Gui:$Gui `
     -FolderPath $FolderPath `
     -Username $Username `
     -LogPath $LogPath `

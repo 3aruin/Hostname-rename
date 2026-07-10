@@ -1,6 +1,7 @@
 # rename.ps1
 # Orchestrator -- calls functions from logging.ps1, network.ps1, device.ps1,
-# and naming.ps1 in the correct order to produce and apply a device name.
+# naming.ps1, and (optionally) gui.ps1 in the correct order to produce and
+# apply a device name.
 
 function Rename-DeviceSmart {
     # Renames this computer per the standard naming convention -- Gateway or User mode.
@@ -11,14 +12,27 @@ function Rename-DeviceSmart {
         [switch]$Folder,
         [switch]$Gateway,
         [switch]$NonInteractive,
+        [switch]$Gui,
         [string]$FolderPath,
         [string]$Username,
         [string]$LogPath
     )
 
+    # Hard stop BEFORE any work (same philosophy as BUG-002 -- never guess in
+    # automation): a GUI cannot exist in an unattended run, and silently
+    # honouring one of the two contradictory switches would hide a deployment
+    # mistake until devices came back wrongly named.
+    if ($Gui -and $NonInteractive) {
+        throw (
+            "-Gui and -NonInteractive are mutually exclusive: a GUI cannot be shown " +
+            "in an unattended session. Drop one of the two switches and re-run. " +
+            "Halting -- never guess in automation."
+        )
+    }
+
     Initialize-Log -LogPath $LogPath
-    Write-Log -Level INFO -Message ("Run started. NonInteractive={0} Folder={1} Gateway={2}" -f `
-        [bool]$NonInteractive, [bool]$Folder, [bool]$Gateway)
+    Write-Log -Level INFO -Message ("Run started. NonInteractive={0} Folder={1} Gateway={2} Gui={3}" -f `
+        [bool]$NonInteractive, [bool]$Folder, [bool]$Gateway, [bool]$Gui)
 
     # Resolve gateway first (both modes need location); NonInteractive forwarded so an unmapped gateway throws instead of falling back.
     $gatewayIP = Get-DefaultGateway
@@ -32,21 +46,127 @@ function Rename-DeviceSmart {
     }
     Write-Log -Level INFO -Message ("Context: ORG={0} WH={1} LOC={2}" -f $ctx.ORG, $ctx.WH, $ctx.LOC)
 
-    $mode = Select-NamingMode -Folder:$Folder -Gateway:$Gateway -NonInteractive:$NonInteractive `
-                              -FolderPath $FolderPath -Username $Username
+    # -- Optional GUI presentation layer --
+    # Collects the same inputs as the console prompts below (mode, department,
+    # type override, profile selection); everything downstream -- name
+    # construction, the ShouldProcess gate, logging, restart -- is shared with
+    # the console path. If Show-RenameGui cannot run (non-interactive desktop,
+    # MTA thread, missing PresentationFramework) it returns the
+    # GUI_UNAVAILABLE sentinel and we fall through to the console prompts:
+    # a GUI failure must never block a rename.
+    $guiInputs = $null
+    $guiSerial = $null
+    if ($Gui) {
+        # Fallback detection: Get-NetworkContext returns $script:FALLBACK_CONTEXT
+        # (network.ps1) for an unmapped gateway in interactive mode. Compared by
+        # value, not reference, so forks that reconfigure the sentinel values
+        # still light the warning banner.
+        $isFallback = ($ctx.ORG -eq $script:FALLBACK_CONTEXT.ORG -and
+                       $ctx.WH  -eq $script:FALLBACK_CONTEXT.WH  -and
+                       $ctx.LOC -eq $script:FALLBACK_CONTEXT.LOC)
+
+        # The window shows both panels' data up front, so type detection,
+        # serial, and profile enumeration all run before it opens.
+        # -NonInteractive on Get-DeviceType skips its console override prompt
+        # only -- the type ComboBox in the window is the override.
+        $detectedType = Get-DeviceType -NonInteractive
+        $guiSerial    = Get-SerialLast4
+
+        # Profile candidates for the User panel. Mirrors Get-UserName's
+        # enumeration rules (device.ps1: system-folder exclusions, most
+        # recently active first, -FolderPath root, -Username filter) -- keep
+        # the two in sync. Not extracted into a shared helper because
+        # device.ps1 is untouched by this change.
+        $profileRoot       = if ([string]::IsNullOrWhiteSpace($FolderPath)) { "C:\Users" } else { $FolderPath }
+        $profileCandidates = @()
+        if (Test-Path -LiteralPath $profileRoot) {
+            $systemFolders = @(
+                "Public", "Default", "DefaultAppPool", "defaultuser0",
+                "Administrator", "Guest", "WDAGUtilityAccount"
+            )
+            $profileCandidates = @(
+                Get-ChildItem -Path $profileRoot -Directory |
+                    Where-Object { $_.Name -notin $systemFolders } |
+                    Sort-Object  LastWriteTime -Descending |
+                    Select-Object -ExpandProperty Name
+            )
+        } elseif (-not [string]::IsNullOrWhiteSpace($FolderPath)) {
+            # Explicit -FolderPath that does not exist is fatal, exactly like
+            # the console path (Get-UserName). A missing default C:\Users is
+            # not: it just leaves the User panel empty so Gateway mode stays usable.
+            throw "Profile search path '$profileRoot' does not exist. Check -FolderPath or use Gateway mode."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($Username)) {
+            $profileCandidates = @($profileCandidates | Where-Object { $_ -like "*$Username*" })
+            if ($profileCandidates.Count -eq 0) {
+                throw "No profile folder under '$profileRoot' matches -Username '$Username'."
+            }
+        }
+
+        # Preselect the mode the console switches would have implied; the
+        # toggle in the window remains free either way.
+        $initialMode = if ($Folder -or
+                           -not [string]::IsNullOrWhiteSpace($FolderPath) -or
+                           -not [string]::IsNullOrWhiteSpace($Username)) { "User" } else { "Gateway" }
+
+        Write-Log -Level INFO -Message "GUI requested -- opening Show-RenameGui."
+        $guiResult = Show-RenameGui `
+            -Context           $ctx `
+            -DetectedType      $detectedType `
+            -SerialLast4       $guiSerial `
+            -CurrentName       $env:COMPUTERNAME `
+            -ProfileCandidates $profileCandidates `
+            -IsFallbackContext:$isFallback `
+            -InitialMode       $initialMode
+
+        if ($guiResult -is [string] -and $guiResult -eq $script:GUI_UNAVAILABLE) {
+            # Show-RenameGui already warned with the specific reason.
+            Write-Log -Level INFO -Message "GUI unavailable -- falling back to console prompts."
+        } elseif ($null -eq $guiResult) {
+            # The window IS the confirmation, so closing it without applying
+            # is the same outcome as answering N at the console prompt.
+            Write-Host "Rename cancelled."
+            Write-Log -Level INFO -Message "Rename cancelled by user in GUI."
+            return
+        } else {
+            $guiInputs = $guiResult
+            Write-Log -Level INFO -Message ("GUI inputs collected: Mode={0} WhatIf={1}" -f `
+                $guiInputs.Mode, [bool]$guiInputs.WhatIf)
+        }
+    }
+
+    $mode = if ($guiInputs) {
+        $guiInputs.Mode
+    } else {
+        Select-NamingMode -Folder:$Folder -Gateway:$Gateway -NonInteractive:$NonInteractive `
+                          -FolderPath $FolderPath -Username $Username
+    }
     Write-Log -Level INFO -Message "Naming mode: $mode"
 
     if ($mode -eq "User") {
         # User mode: {WH}{LOC}-{Name}
-        $userName = Get-UserName -NonInteractive:$NonInteractive -FolderPath $FolderPath -Username $Username
+        $userName = if ($guiInputs) {
+            # The GUI returns the raw profile folder name; clean it with the
+            # same helper Get-UserName delegates to, so both paths converge
+            # on identical tokens.
+            ConvertTo-CleanUserName -Name $guiInputs.ProfileName
+        } else {
+            Get-UserName -NonInteractive:$NonInteractive -FolderPath $FolderPath -Username $Username
+        }
         Write-Log -Level INFO -Message "Selected user token: $userName"
         $newName  = New-UserDeviceName -WH $ctx.WH -LOC $ctx.LOC -Name $userName
 
     } else {
         # Gateway mode: {ORG}{WH}{LOC}-{DEPT}{TYPE}-{SERIAL}
-        $dept   = Get-Department -NonInteractive:$NonInteractive
-        $type   = Get-DeviceType -NonInteractive:$NonInteractive
-        $serial = Get-SerialLast4
+        if ($guiInputs) {
+            $dept   = $guiInputs.Department
+            $type   = $guiInputs.Type
+            $serial = $guiSerial   # fetched before the window opened
+        } else {
+            $dept   = Get-Department -NonInteractive:$NonInteractive
+            $type   = Get-DeviceType -NonInteractive:$NonInteractive
+            $serial = Get-SerialLast4
+        }
         Write-Log -Level INFO -Message ("Gateway-mode parts: DEPT={0} TYPE={1} SERIAL={2}" -f $dept, $type, $serial)
 
         $newName = New-DeviceName `
@@ -63,8 +183,15 @@ function Rename-DeviceSmart {
     Write-Host ""
     Write-Log -Level INFO -Message "Proposed name: $newName"
 
-    # Skip the Y/N prompt under -WhatIf (ShouldProcess prints the What-If line) and -NonInteractive.
-    $proceed = $NonInteractive -or $WhatIfPreference
+    # GUI "Dry run" rides the existing -WhatIf rails: raising the local
+    # preference makes the ShouldProcess gate below print the What-If line
+    # and skip the rename, identical to launching with -WhatIf.
+    if ($guiInputs -and $guiInputs.WhatIf) { $WhatIfPreference = $true }
+
+    # Skip the Y/N prompt under -WhatIf (ShouldProcess prints the What-If line),
+    # -NonInteractive, and the GUI path -- the window IS the confirmation, so a
+    # second prompt would be a double-ask.
+    $proceed = $NonInteractive -or $WhatIfPreference -or ($null -ne $guiInputs)
     if (-not $proceed) {
         $answer  = Read-Host "Rename to '$newName' and restart? (Y/N)"
         $proceed = $answer -match "^[Yy]"

@@ -26,9 +26,18 @@ Hostname-rename/
 ├── naming.ps1          # Naming mode selection and name construction
 ├── gui.ps1             # Optional WPF window for -Gui — falls back to console
 ├── rename.ps1          # Rename-DeviceSmart orchestrator
-└── tools/
-    └── Get-Hashes.ps1  # Local helper — regenerates manifest hashes
+├── tests/
+│   ├── Hostname-Rename.Tests.ps1      # Pester unit tests — pure logic, no WMI/OS dependency
+│   └── Hostname-Rename.Gui.Tests.ps1  # Pester tests for the -Gui feature
+├── tools/
+│   └── Get-Hashes.ps1  # Local helper — regenerates manifest hashes
+└── .github/workflows/
+    └── ci.yml          # CI — lint, Pester tests, manifest hash check, placeholder check
 ```
+
+See [`INDEX.md`](INDEX.md) for a map of every file (including the docs), and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the PR process and how to run the
+tests locally (`Invoke-Pester ./tests`).
 
 ---
 
@@ -101,7 +110,7 @@ $script:GATEWAY_MAP = @{
 }
 ```
 
-### 3. Generate hashes and pin to a commit
+### 3. Generate hashes
 
 After any change to module files, regenerate the manifest from the repo root:
 
@@ -109,7 +118,21 @@ After any change to module files, regenerate the manifest from the repo root:
 .\tools\Get-Hashes.ps1
 ```
 
-Paste the output into the `$MANIFEST` block in `launcher.ps1`, commit all changes, and note the resulting commit SHA.
+Paste the output into the `$MANIFEST` block in `launcher.ps1`, commit all changes, push, and copy the resulting full 40-character commit SHA — this is the **module commit**.
+
+### 4. Pin the launcher
+
+In `launcher.ps1`, set `$COMMIT_SHA` to the module commit's SHA:
+
+```powershell
+$COMMIT_SHA = "<module-commit SHA>"
+```
+
+Commit and push again, and copy this second SHA — the **launcher commit**. Your deployment URL uses the launcher-commit SHA; the launcher then fetches the modules from the module commit and verifies them against `$MANIFEST`.
+
+Two commits are unavoidable: a file cannot contain the SHA of the commit it is part of, so the launcher pins the *previous* commit — the one that already holds the modules and their hashes.
+
+An unpinned launcher (`$COMMIT_SHA` still `REPLACE_WITH_COMMIT_SHA`) **refuses to run**; `-AllowUnverified` bypasses this for development only.
 
 > ⚠️ **Always pin to a full 40-character commit SHA in your deployment URL — never use `main`.** A branch ref can be force-pushed; a commit SHA is immutable, which makes the integrity check meaningful.
 
@@ -189,9 +212,9 @@ Follow these steps after any change to module files:
 
 1. Edit module files as needed
 2. Run `.\tools\Get-Hashes.ps1` and paste the output into the `$MANIFEST` block in `launcher.ps1`
-3. Commit all changes
-4. Copy the new commit SHA
-5. Update your deployment script or MDM command with the new SHA in the URL
+3. Commit all changes and push; copy the resulting SHA — the **module commit**
+4. Set `$COMMIT_SHA` in `launcher.ps1` to the module-commit SHA; commit and push again; copy this second SHA — the **launcher commit**
+5. Update your deployment script or MDM command with the launcher-commit SHA in the URL
 
 ---
 
@@ -260,4 +283,4 @@ Run logs older than 30 days are pruned from the **default** `%TEMP%\Hostname-Ren
 ## Usage Notes
 
 - Silent/MDM deployment is supported via `-NonInteractive -Gateway`
-- If the detected gateway is not in `$GATEWAY_MAP`, the tool warns and uses fallback values — add the site before deploying to that network
+- If the detected gateway is not in `$GATEWAY_MAP`, the tool warns and uses the fallback values in `$script:FALLBACK_CONTEXT` (`network.ps1`, default `XX`/`99`/`X`) — add the site before deploying to that network

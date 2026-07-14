@@ -22,17 +22,25 @@ The integrity model depends on pinning your deployment URL to a specific commit 
 3.  Copy the output block and paste it over the $MANIFEST in launcher.ps1
 4.  Commit ALL changed files in one commit (modules + launcher.ps1)
 5.  Push to GitHub
-6.  Copy the resulting full 40-character commit SHA from GitHub
-7.  Update every deployment script / MDM command with:
-        ...Hostname-rename/<NEW_SHA>/launcher.ps1
+6.  Copy the resulting full 40-character commit SHA -- the MODULE commit
+7.  In launcher.ps1, set $COMMIT_SHA to the module-commit SHA
+8.  Commit and push again; copy this second SHA -- the LAUNCHER commit
+9.  Update every deployment script / MDM command with:
+        ...Hostname-rename/<LAUNCHER_SHA>/launcher.ps1
 ```
+
+Two commits are unavoidable: `launcher.ps1` cannot contain the SHA of the
+commit it is part of, so `$COMMIT_SHA` pins the *previous* commit — the one
+that already holds the modules and the hashes in `$MANIFEST`. The deployment
+URL fetches the launcher from the launcher commit; the launcher fetches the
+modules from the module commit.
 
 > ⚠️ **Never use `main` in a production URL.** A branch ref can be force-pushed;
 > a commit SHA is immutable. Pinning to `main` makes the manifest check meaningless.
 
 ### Changing only `launcher.ps1` (e.g. updating `$MANIFEST` or `$REPO_BASE`)
 
-Steps 1–7 above, but `Get-Hashes.ps1` output will be identical to the previous
+Steps 1–9 above, but `Get-Hashes.ps1` output will be identical to the previous
 run (module files unchanged). You still need a new SHA for the URL.
 
 ### Forking the repo

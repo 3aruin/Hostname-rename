@@ -9,10 +9,290 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-### Ideas — v3.2
-- Configurable `Select-NamingMode` timeout (OQ-004 — currently hardcoded 8s)
-- Log retention / rotation for the `%TEMP%\Hostname-Rename` directory
-- Improve `LT` detection via `Win32_SystemEnclosure.ChassisTypes` (9/10) instead of the `Model` string heuristic
+Nothing yet.
+
+---
+
+## [3.8.0] — 2026-07-12
+
+### Fixed — v3.8 review pass, cleanup batch (2026-07-11, REVIEW-FINDINGS.md F-04…F-08)
+
+- **F-04 / BUG-013(a)** — the CI lint matrix's "5.1" leg never actually ran
+  Windows PowerShell (its `ps-version` axis was referenced by no step; both legs
+  ran `pwsh`). The lint **and** test jobs now use a `matrix.include` that pairs
+  each `ps-version` with its real `shell` (`powershell` / `pwsh`), so 5.1 is
+  genuinely linted *and* tested. The 5.1 Pester leg needs `-SkipPublisherCheck`
+  (5.1 ships Pester 3.4 under a different signing certificate); artifact names
+  are now unique per leg (upload-artifact v4 rejects duplicates). Suite verified
+  green under both editions locally: 95/95 each.
+- **BUG-018 (F-05)** — `Select-NamingMode` crashed (`InvalidOperationException`
+  from `[Console]::KeyAvailable`) when stdin is not a real console — piped
+  input, some remoting hosts, RMM agents. It now announces the redirected input
+  and takes the documented Gateway default, same as the timeout. Regression test
+  drives a real child PowerShell with piped stdin.
+- **BUG-019 (F-06)** — `Get-DefaultGateway` returned the first enumerated
+  adapter's gateway (VPN/multi-NIC roulette) and could return an IPv6 literal
+  that can never match the IPv4-keyed `GATEWAY_MAP`. Now returns the next-hop of
+  the lowest-effective-metric IPv4 default route via `Get-NetRoute`
+  (`RouteMetric + InterfaceMetric`, the same sum Windows uses — verified against
+  `Find-NetRoute` on a dual-route machine), with the legacy query as an
+  IPv4-filtered fallback.
+- **BUG-020 (F-07)** — module fetches had no timeout anywhere (`iwr` defaults to
+  infinite; `Receive-Job -Wait` waits forever), so a stalled connection hung
+  unattended MDM runs indefinitely. Transfers are now bounded at 60 s in-job and
+  90 s at collection, feeding the existing "Failed to fetch" error path.
+- **BUG-021 (F-08, minor batch)** — UAC decline now exits with a clear message
+  instead of a raw exception; the CI manifest regex accepts uppercase hex and
+  **fails** (not warns) when a pinned SHA has zero parsable hashes (closes
+  BUG-013(b)); `New-UserDeviceName` throws a clean error instead of
+  `ArgumentOutOfRange` when WH+LOC leave no room; `Get-Department` /
+  `Get-UserName` prompt loops bail out after 10 attempts instead of spinning
+  forever on exhausted stdin; both `wt.exe` relaunch paths escape `;` as `\;`
+  (wt's pane separator); and the GUI-fallback path reuses the pre-GUI device
+  type and serial instead of re-querying WMI (`Get-DeviceType -Detected`).
+- **Tests: 88 → 95.** New coverage: `-Detected` reuse and invalid-`-Detected`
+  rejection, bounded prompt loops, redirected-stdin naming-mode default,
+  IPv4-only gateway contract, and the `New-UserDeviceName` overflow guard; the
+  GUI contract test now pins single-fetch fallback behaviour.
+
+### Fixed — v3.8 review pass (2026-07-11, REVIEW-FINDINGS.md F-01…F-03)
+
+- **BUG-015 (F-01, Critical)** — `Get-DeviceType`'s "parallel CIM queries" called
+  `Get-CimInstance -AsJob`, a parameter that does not exist on any PowerShell
+  edition. The binding error was swallowed by the blanket `catch`, so **every
+  device silently detected as `DT`** in every real run since the code shipped.
+  Replaced with four sequential `Get-CimInstance` calls; the fallback warning
+  now includes the underlying exception message. Regression guards added: an
+  AST check that every `Get-CimInstance` parameter in `device.ps1` is real,
+  and a no-mock execution of `Get-DeviceType -NonInteractive` asserting the
+  catch path is not taken.
+- **BUG-016 (F-02, High)** — the iex-path elevation relaunch spliced forwarded
+  parameters after `iex (irm 'url')`, where `Invoke-Expression`'s single
+  `-Command` parameter makes every appended token a binding error — the
+  parameterized non-admin one-liner could never work. Now builds
+  `& ([scriptblock]::Create((irm 'url'))) <args>`, the form the launcher's own
+  header documents. Regression guards: static shape assertion plus a real
+  child-process `-Command` round-trip binding a spaced string, a switch, and
+  an `[int]`.
+- **BUG-017 (F-03, High)** — the hash-manifest pipeline was line-ending
+  sensitive while the tree itself had mixed EOLs (three modules CRLF, four LF)
+  and no `.gitattributes`, so a locally regenerated `$MANIFEST` could fail the
+  runtime hash check on every device (fleet-wide fail-closed outage). Added
+  `.gitattributes` (`*.ps1 text eol=lf`), normalized all modules to LF, and
+  made `tools/Get-Hashes.ps1` and the CI manifest job hash raw on-disk bytes
+  (`[IO.File]::ReadAllBytes`) — byte-identical with each other and with what
+  `raw.githubusercontent.com` serves. `Get-Hashes.ps1` now warns if a module
+  has a BOM or CRLF instead of emitting a hash that cannot match at runtime.
+
+---
+
+## [3.3.0] — 2026-07-11
+
+Maintenance release. Ships the three v3.3 ideas queued in [3.2.0]'s Unreleased
+section — configurable prompt timeout (OQ-004), log retention (ADR-009), and
+chassis-based `LT` detection — plus one bug fix (BUG-014) found while wiring
+the new parameter through the elevation relaunch. No behaviour changes for
+existing invocations: every new parameter defaults to the previous behaviour,
+and `-NonInteractive` deployments are untouched.
+
+### Added
+
+- **`-PromptTimeoutSeconds` (OQ-004).** The naming-mode prompt's timeout is now a
+  parameter (`[int]`, `ValidateRange(1, 300)`), forwarded `launcher.ps1` →
+  `Rename-DeviceSmart` → `Select-NamingMode`. Default stays 8 seconds, so
+  omitting it is byte-for-byte the old behaviour. Console-only by design: the
+  GUI window has no timed prompt, and `-NonInteractive` still skips the prompt
+  entirely. Resolves OQ-004 (previously "fork and adjust").
+
+- **Log retention (ADR-009).** `Initialize-Log` now prunes this tool's own run
+  logs (`Hostname-Rename_*.log`) older than `$script:LOG_RETENTION_DAYS`
+  (30 days) via the new `Remove-OldLogFile` helper — **only** in the default
+  `%TEMP%\Hostname-Rename` directory. An explicit `-LogPath` (e.g. a shared UNC
+  log share holding other machines' logs) is never pruned; retention there is
+  the share owner's policy. Same never-block rule as all logging (ADR-007): any
+  retention failure degrades to "old logs stay on disk". Deletion is gated by
+  `ShouldProcess`, so a `-WhatIf` run prunes nothing.
+
+- **Tests: 70 → 84.** New chassis-`LT` and priority cases, the
+  `-PromptTimeoutSeconds` contract (accepted / range-validated / default-8
+  pinned via AST / forwarded by `Rename-DeviceSmart`), and a `Remove-OldLogFile`
+  retention block (expired removed, fresh kept, non-matching files never
+  touched, `-WhatIf` removes nothing, missing directory never throws).
+
+### Changed
+
+- **`LT` detection is now chassis-first.** `Resolve-DeviceType` treats
+  `Win32_SystemEnclosure.ChassisTypes` 9 (Laptop) / 10 (Notebook) as the
+  authoritative laptop signal; the old `Model -match "Laptop"` heuristic is kept
+  as a fallback for firmware that reports a generic chassis. The priority chain
+  is unchanged (`VM > SV > TB > MD > LT > PB > DT`) — an ARM notebook still
+  records `MD`, a convertible still records `TB`. Machines whose chassis is
+  9/10 but whose model string lacks "Laptop" (most business laptops — Latitude,
+  EliteBook, ThinkPad) previously fell through to `DT` and are now correctly
+  `LT`.
+
+### Fixed
+
+- **BUG-014** — `launcher.ps1` `Invoke-SelfElevation` wrapped forwarded
+  parameter values in single quotes for **both** relaunch paths, but single
+  quotes are literal characters to the native command line: on the `-File`
+  path (saved script, non-elevated start) string values arrived quote-wrapped,
+  values with spaces were split mid-value, and non-string values failed
+  parameter binding outright — which would have broken `-PromptTimeoutSeconds`
+  on that path. Values are now quoted per relaunch path: double quotes for
+  `-File` (the native parser strips them; embedded `"` is already refused by
+  the SEC-003 guard), single quotes for the `iex` `-Command` string
+  (unchanged). Verified with real `powershell.exe -File` / `-Command`
+  round-trips using a spaced path and an `[int]` value. Full write-up in
+  DECISIONS.md → Known Bugs.
+
+> **Manifest note:** `logging.ps1`, `device.ps1`, `naming.ps1`, `rename.ps1`,
+> and `launcher.ps1` all changed in this release. Anyone deploying with a
+> populated `$MANIFEST` must re-run `tools/Get-Hashes.ps1` and paste the full
+> block before pinning a new SHA (remember SEC-002: once pinned, any leftover
+> placeholder entry is fatal at runtime). The canonical repo keeps
+> `REPLACE_WITH_HASH` placeholders as before.
+
+---
+
+## [3.2.0] — 2026-07-10
+
+Feature release. Adds the optional `-Gui` WPF presentation layer (ADR-008) and
+the security hardening that came out of its adversarial review (SEC-001 …
+SEC-005, recorded in DECISIONS.md → Security Findings). The console flow
+without `-Gui` is functionally identical to v3.1.0 — same prompts, same
+parameters, same behaviour — and `-NonInteractive` deployments are untouched.
+One deliberate behaviour change, from SEC-001: an unpinned launcher
+(`$COMMIT_SHA` still the placeholder) now refuses to run instead of silently
+fetching unverified code from `main`; production/MDM deployments (pinned SHA,
+populated manifest) are unaffected.
+
+### Added
+
+- **`-Gui` — optional WPF presentation layer.** New `gui.ps1` module (loaded after
+  `naming.ps1`, before `rename.ps1` — see `$MODULES` in `launcher.ps1`) adds a
+  `Show-RenameGui` window that collects the same inputs as the console prompts
+  (naming mode, department, type override, profile selection), with a live
+  preview built from the same `New-DeviceName` / `New-UserDeviceName` functions
+  the console path uses, so the preview can never drift from the name that is
+  actually applied. `gui.ps1` never calls `Rename-Computer` itself — `rename.ps1`
+  still owns the `ShouldProcess` gate and the rename.
+  - `-Gui` + `-NonInteractive` together throw immediately: a GUI cannot exist in
+    an unattended run, and silently honouring one of the two would hide a
+    deployment mistake (same never-guess-in-automation philosophy as BUG-002).
+  - Any precondition failure (non-interactive session, non-STA thread,
+    `PresentationFramework` unavailable) or unexpected WPF error returns a
+    `$script:GUI_UNAVAILABLE` sentinel and falls back to the existing console
+    prompts — a GUI failure must never block a rename.
+  - Window close paths: **Rename** and **Dry run** collect inputs and close the
+    window (Dry run rides the existing `-WhatIf` rails); **Cancel** and the
+    titlebar **X** both leave the result `$null`, handled identically to
+    answering `N` at the console confirmation prompt — the window IS the
+    confirmation, so there is no second Y/N prompt afterward.
+  - Every exit path is logged via `Write-Log` from `rename.ps1` (per ADR-007,
+    `gui.ps1` itself never calls `Write-Log`).
+  - The XAML is a static, single-quoted here-string — no runtime data (profile
+    names, hostnames, serials, WMI model strings) is ever interpolated into it,
+    since XAML is executable markup and splicing attacker-influenced strings
+    into it would be an injection vector. All values are populated via control
+    properties after parsing.
+  - `launcher.ps1` gains the `-Gui` switch, forwarded to `Rename-DeviceSmart`.
+    `tools/Get-Hashes.ps1` and `$MANIFEST` in `launcher.ps1` both updated to
+    include `gui.ps1` in the hashed file list, in the same load-order position.
+
+- **`Resolve-GatewayPreview` (`gui.ps1`).** The Gateway-mode preview logic
+  (comparing the untruncated name against the actual result to detect a dropped
+  department segment, and reporting the "even the shortened form overflows 15
+  chars" error state) is now a standalone, WPF-free, unit-testable function —
+  `Update-RenameGuiPreview` only binds its result to controls.
+
+- **`Get-RenameGuiXaml` (`gui.ps1`).** The window XAML is now a standalone
+  function returning the markup as a string, so it can be parsed with
+  `XamlReader` in a test without needing an interactive/STA session.
+
+- **`tests/Hostname-Rename.Gui.Tests.ps1`.** New Pester v5 file, same
+  no-WMI/OS/GUI-dependency conventions as the main suite: `Resolve-GatewayPreview`
+  cases, an XAML smoke test guarded by a `PresentationFramework` availability
+  check (skips cleanly where WPF is absent, e.g. Server Core CI images), and
+  mock-based parameter-contract tests for `Rename-DeviceSmart -Gui` (throws with
+  `-NonInteractive`; falls back to the console flow without throwing when GUI
+  preconditions fail; forwards identical parameters to the console path when
+  `-Gui` is absent). No real WMI call, WPF window, or `Rename-Computer`
+  invocation happens in any test.
+
+### Fixed
+
+- **BUG-012** — `logging.ps1` `Write-Log` was flagged by
+  `PSAvoidOverwritingBuiltInCmdlets` under PowerShell 7/`pwsh` (not Windows
+  PowerShell 5.1). False positive: PSScriptAnalyzer's bundled `core-6.1.0-windows`
+  compatibility profile lists a `Write-Log` cmdlet that does not exist on any
+  PowerShell edition this project targets (verified via `Get-Command` on both
+  PS 7.6 and Windows PowerShell 5.1; ADR-005 — no third-party modules). Suppressed
+  inline with justification, per the BUG-009 approach. Found during the `-Gui`
+  feature review; unrelated to the GUI code itself — the CI `lint` job's steps
+  always run under `pwsh` regardless of the declared matrix leg (see DECISIONS.md
+  → Known Bugs → BUG-013), so this warning would have failed every lint run.
+
+### Security
+
+All five findings come from the dedicated threat-hunt pass over the `-Gui`
+branch (2026-07-10). The hunt covered the whole run path an elevated launcher
+exercises, not just `gui.ps1` — which is why most fixes land outside the GUI
+module. Full write-ups with severity and attack scenarios in DECISIONS.md →
+Security Findings.
+
+- **SEC-001** · `launcher.ps1` — an unpinned launcher (`$COMMIT_SHA` still
+  `REPLACE_WITH_COMMIT_SHA`) previously warned and then fetched every module
+  from `main` with **no hash verification, into an elevated process**. It now
+  throws by default; the new `-AllowUnverified` switch is the explicit,
+  development-only opt-in (and still warns loudly). The guard never fires for
+  a correctly pinned production/MDM deployment. This is the release's only
+  behaviour change.
+
+- **SEC-002** · `launcher.ps1` — mixed manifests now fail closed: once a real
+  commit SHA is pinned, any `$MANIFEST` entry still holding `REPLACE_WITH_HASH`
+  aborts the run before anything is fetched. Previously that one module loaded
+  silently unverified (placeholder entries skip the hash check) while the rest
+  were verified — a partial-integrity gap a half-regenerated manifest opened
+  without any visible signal.
+
+- **SEC-003** · `launcher.ps1` — `Invoke-SelfElevation` now refuses to forward
+  any parameter value containing a double-quote. Forwarded values are
+  single-quoted, but on the `iex` relaunch path the entire command rides inside
+  a `-Command "..."` string, where an embedded `"` terminates the string — a
+  command-injection primitive that single-quoting cannot neutralise. Windows
+  paths, usernames, and the allow-listed dept/type tokens never legitimately
+  contain one, so a hard refusal is safe.
+
+- **SEC-004** · `logging.ps1` + `rename.ps1` — a UNC `-LogPath` or `-FolderPath`
+  now draws a prominent warning (and, for `-FolderPath`, a WARN log line):
+  every log write / profile enumeration authenticates this **elevated** machine
+  to the remote SMB host via NTLM — a handshake a hostile share can capture or
+  relay. UNC paths remain supported (ADR-007 documents the log-share use case);
+  the point is that a coerced or mistyped UNC value is now visible instead of
+  leaking silently.
+
+- **SEC-005** · `device.ps1` + `rename.ps1` — `-Username` is now matched as a
+  literal substring: wildcard metacharacters (`*`, `?`, `[`) are escaped via
+  `[WildcardPattern]::Escape` before the `-like` filter, in both the console
+  path (`Get-UserName`) and the GUI's candidate pre-enumeration (kept
+  identical), so a metacharacter in the value can no longer select an
+  unintended profile — which `-NonInteractive` would then auto-pick as the
+  device name. Profile enumeration also switched from `-Path` to `-LiteralPath`.
+
+- **Verified, no change needed** — the static-XAML rule held under adversarial
+  review: `Get-RenameGuiXaml` interpolates nothing (zero `$` characters), and
+  the Pester assertion added in this release pins that property so a regression
+  fails CI.
+
+> **Manifest note:** `gui.ps1` is new and other module files are unchanged, so
+> anyone running with a populated `$MANIFEST` must regenerate hashes via
+> `tools/Get-Hashes.ps1` before redeploying. The canonical repo keeps
+> `REPLACE_WITH_HASH` placeholders, so the CI `manifest` job still exits cleanly
+> (it skips validation entirely rather than failing when placeholders are
+> present — see DECISIONS.md → Known Bugs → BUG-013). Note the interaction with
+> SEC-002: once you pin a real SHA, *every* placeholder entry becomes fatal at
+> runtime — regenerate the whole block, not just the new file's line.
 
 ---
 
@@ -296,7 +576,10 @@ forwarding, parallel CIM queries) with the following known issues — all resolv
 
 ---
 
-[Unreleased]: https://github.com/3aruin/Hostname-rename/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/3aruin/Hostname-rename/compare/v3.8.0...HEAD
+[3.8.0]: https://github.com/3aruin/Hostname-rename/compare/v3.3.0...v3.8.0
+[3.3.0]: https://github.com/3aruin/Hostname-rename/compare/v3.2.0...v3.3.0
+[3.2.0]: https://github.com/3aruin/Hostname-rename/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/3aruin/Hostname-rename/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/3aruin/Hostname-rename/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/3aruin/Hostname-rename/releases/tag/v3.0.0

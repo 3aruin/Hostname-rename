@@ -13,7 +13,7 @@ This document covers two things:
 
 The integrity model depends on pinning your deployment URL to a specific commit SHA and keeping `$MANIFEST` hashes in sync.
 
-### After any change to module files (`logging.ps1`, `network.ps1`, `device.ps1`, `naming.ps1`, `rename.ps1`)
+### After any change to module files (`logging.ps1`, `network.ps1`, `device.ps1`, `naming.ps1`, `gui.ps1`, `rename.ps1`)
 
 ```
 1.  Edit the module file(s)
@@ -115,9 +115,12 @@ Add `config.ps1` to `$MODULES` in `launcher.ps1` and to `$MANIFEST`
 # Install Pester (once)
 Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser -Force
 
-# Run from repo root
-Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed
+# Run both suites from the repo root
+Invoke-Pester ./tests -Output Detailed
 ```
+
+The GUI suite's XAML smoke tests need `PresentationFramework`; on machines
+without WPF (e.g. Server Core) they skip cleanly and everything else still runs.
 
 ---
 
@@ -160,8 +163,51 @@ Invoke-Pester ./tests/Hostname-Rename.Tests.ps1 -Output Detailed
 - Empty `catch` blocks trip `PSAvoidUsingEmptyCatchBlock`; prefer
   `-ErrorAction SilentlyContinue` on the call, or put a real statement
   (e.g. `Write-Verbose`) in the `catch`
+- **GUI code (`gui.ps1`) has four extra rules (ADR-008):**
+  - **The XAML is static.** The window markup is a single-quoted here-string
+    returned by `Get-RenameGuiXaml`, containing zero `$` characters. Never
+    interpolate runtime data (profile names, hostnames, serials, WMI strings)
+    into markup — XAML is executable, and a spliced string is an injection
+    vector. A Pester assertion greps the XAML for `$` and fails on any hit.
+  - **Populate data via code, after parsing.** Runtime values go into control
+    properties (`.Text`, `Items.Add`, `.Tag`) once `XamlReader::Parse` has
+    built the tree; there they are inert data.
+  - **ASCII-only applies inside the XAML too.** The markup lives in a `.ps1`
+    here-string, so the repo-wide ASCII rule above covers it — no em dashes or
+    fancy quotes in labels either.
+  - **Precondition-and-fallback, never block.** Anything GUI-shaped must probe
+    its preconditions (`[Environment]::UserInteractive`, STA thread,
+    `PresentationFramework` loads) and return the `$script:GUI_UNAVAILABLE`
+    sentinel — not throw — on failure or unexpected WPF error, so the caller
+    falls back to the console prompts. A GUI failure must never block a
+    rename. Keep decision logic in pure, WPF-free functions (the
+    `Resolve-GatewayPreview` pattern) so it stays unit-testable; `gui.ps1`
+    never calls `Rename-Computer` or `Write-Log`.
 
 ---
+
+## Shipped in v3.3
+
+See CHANGELOG.md → [3.3.0]:
+
+| Item | Status |
+|---|---|
+| `-PromptTimeoutSeconds [int]` — configurable naming-mode prompt timeout (OQ-004) | ✅ Shipped |
+| Log retention — 30-day pruning of the default `%TEMP%\Hostname-Rename` directory (ADR-009, `Remove-OldLogFile`) | ✅ Shipped |
+| Chassis-first `LT` detection (`ChassisTypes` 9/10, `Model` heuristic kept as fallback) | ✅ Shipped |
+| BUG-014 — per-path quoting in `Invoke-SelfElevation` (`-File` vs `iex` relaunch) | ✅ Shipped |
+
+## Shipped in v3.2
+
+See CHANGELOG.md → [3.2.0]:
+
+| Item | Status |
+|---|---|
+| `-Gui` — optional WPF window with console fallback (ADR-008) | ✅ Shipped |
+| `gui.ps1` module (`Show-RenameGui`, `Resolve-GatewayPreview`, `Get-RenameGuiXaml`) | ✅ Shipped |
+| `tests/Hostname-Rename.Gui.Tests.ps1` — GUI logic, XAML smoke, parameter contracts | ✅ Shipped |
+| Security hardening from the `-Gui` threat hunt — SEC-001 … SEC-005 (incl. the new `-AllowUnverified` guard) | ✅ Shipped |
+| BUG-012 — `Write-Log` analyzer false-positive suppression | ✅ Shipped |
 
 ## Shipped in v3.1
 
@@ -176,5 +222,5 @@ See CHANGELOG.md → [3.1.0]:
 | `-WhatIf` / `SupportsShouldProcess` (OQ-002) | ✅ Shipped |
 | Logging — `logging.ps1` (`Initialize-Log` / `Write-Log`, OQ-001) | ✅ Shipped |
 
-Ideas for **v3.2** live in CHANGELOG.md → Unreleased (configurable prompt timeout,
-log retention, chassis-based `LT` detection).
+Ideas for **v3.4** live in CHANGELOG.md → Unreleased (BUG-013 CI fixes,
+GUI-fallback WMI caching).

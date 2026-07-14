@@ -1,0 +1,12 @@
+# Line-ending policy (BUG-017).
+#
+# The deployment integrity model hashes module bytes in three places: locally
+# (tools/Get-Hashes.ps1), in CI (manifest job), and at runtime (launcher.ps1
+# hashing what raw.githubusercontent.com serves). SHA-256 over text is CRLF/LF
+# sensitive, so all three parties MUST see identical bytes. GitHub raw serves
+# the committed blob, which in a normalized repo is LF -- therefore *.ps1 is
+# pinned to LF in the working copy too, on every platform.
+#
+# After adding or changing this file, run:  git add --renormalize .
+* text=auto
+*.ps1 text eol=lf

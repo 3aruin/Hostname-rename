@@ -24,6 +24,7 @@ Hostname-rename/
 ├── network.ps1         # Gateway map and network context resolution
 ├── device.ps1          # Device type detection, department, serial, profile selection
 ├── naming.ps1          # Naming mode selection and name construction
+├── gui.ps1             # Optional WPF window for -Gui — falls back to console
 ├── rename.ps1          # Rename-DeviceSmart orchestrator
 └── tools/
     └── Get-Hashes.ps1  # Local helper — regenerates manifest hashes
@@ -130,6 +131,29 @@ iex (iwr "https://raw.githubusercontent.com/YOUR_ORG/Hostname-rename/COMMIT_SHA/
 )) -NonInteractive -Gateway
 ```
 
+### GUI mode
+
+Append `-Gui` to replace the console prompts with a WPF window:
+
+```powershell
+& ([scriptblock]::Create(
+    (iwr "https://raw.githubusercontent.com/YOUR_ORG/Hostname-rename/COMMIT_SHA/launcher.ps1").Content
+)) -Gui
+```
+
+The window shows the detected context (gateway, current name, serial, device
+type), a Gateway/User mode toggle, department and type dropdowns, a profile
+list for User mode, and a live name preview with a 15-character counter. The
+window **is** the confirmation — **Rename device** applies immediately with no
+second Y/N prompt, **Dry run** behaves like `-WhatIf`, and **Cancel** (or
+closing the window) behaves like answering `N`.
+
+> If a window cannot be shown — a PowerShell remoting session, a service or
+> SYSTEM context, a non-STA host, or a machine without WPF such as Server
+> Core — the tool warns and falls back to the standard console prompts. A GUI
+> problem never blocks a rename. `-Gui` cannot be combined with
+> `-NonInteractive`; that combination throws immediately.
+
 ### Dry Run
 
 Append `-WhatIf` to see the name that *would* be applied, with no rename and no restart:
@@ -149,10 +173,13 @@ Append `-WhatIf` to see the name that *would* be applied, with no rename and no 
 | `-Gateway` | switch | Force Gateway naming mode |
 | `-Folder` | switch | Force User naming mode — selects a name from `C:\Users` profile folders |
 | `-NonInteractive` | switch | Suppress all prompts; for MDM / automated deployment |
+| `-Gui` | switch | Collect inputs in a WPF window instead of console prompts (see GUI mode above). Falls back to the console prompts if a window cannot be shown. Cannot be combined with `-NonInteractive`. |
 | `-FolderPath` | string | User mode: directory to search for profile folders instead of `C:\Users` (e.g. a redirected-profiles path). Supplying it implies User mode. |
 | `-Username` | string | User mode: partial name matched against profile folders (case-insensitive). Interactive shows the filtered list; NonInteractive picks the most recently active match. Supplying it implies User mode. |
 | `-LogPath` | string | Directory for the run log. Defaults to `%TEMP%\Hostname-Rename`. Logging never blocks a rename. |
+| `-PromptTimeoutSeconds` | int | Seconds the naming-mode prompt waits before defaulting to Gateway (1–300, default `8`). Console only — the GUI has no timed prompt, and `-NonInteractive` skips the prompt entirely. |
 | `-WhatIf` | switch | Dry run — show the name that *would* be applied without renaming or restarting. |
+| `-AllowUnverified` | switch | **Development only.** Let an unpinned launcher (`COMMIT_SHA` still the placeholder) fetch modules from `main` with no hash verification. Without it, an unpinned launcher refuses to run. Never use in production or MDM — pin a commit SHA instead. |
 
 ---
 
@@ -185,7 +212,7 @@ To add a new department, append its two-character code to `$script:VALID_DEPARTM
 
 ### Device type codes (`$script:DEVICE_TYPES` in `device.ps1`)
 
-Type is auto-detected at runtime using three parallel WMI queries. The detection chain runs in priority order — first match wins, `DT` is the fallback if nothing else matches.
+Type is auto-detected at runtime using four parallel WMI queries. The detection chain runs in priority order — first match wins, `DT` is the fallback if nothing else matches.
 
 | Code | Description | Detection |
 |---|---|---|
@@ -193,7 +220,7 @@ Type is auto-detected at runtime using three parallel WMI queries. The detection
 | `SV` | Server | `Win32_OperatingSystem.ProductType` ≠ 1 (i.e. not Workstation) |
 | `TB` | Tablet / Convertible | `Win32_SystemEnclosure.ChassisTypes` contains `30` (Tablet) or `31` (Convertible) |
 | `MD` | Mobile / ARM | `Win32_Processor.Architecture` = `5` (ARM) |
-| `LT` | Laptop | `Win32_ComputerSystem.Model` contains `"Laptop"` |
+| `LT` | Laptop | `Win32_SystemEnclosure.ChassisTypes` contains `9` (Laptop) or `10` (Notebook); falls back to `Win32_ComputerSystem.Model` containing `"Laptop"` |
 | `PB` | Pizza Box (low-profile rack unit) | `Win32_SystemEnclosure.ChassisTypes` contains `5` |
 | `ET` | Thin Client / Endpoint Terminal | Manual override only — no WMI signal |
 | `DT` | Desktop | Default fallback |
@@ -225,6 +252,8 @@ If you need a property from a class not listed above, add a fifth parallel job i
 Each run writes a timestamped log. By default it lands in `%TEMP%\Hostname-Rename` as `Hostname-Rename_<OLD-NAME>_<timestamp>.log`; pass `-LogPath` to send it elsewhere (a local folder or a UNC share, e.g. `-LogPath "\\fileserver\logs\renames"`).
 
 Logging is best-effort and **never blocks a rename**: if the directory can't be created or a write fails (an unreachable share, a permissions issue), the tool warns once and carries on. Under `-WhatIf` the intended rename is recorded as a `WhatIf:` line rather than performed.
+
+Run logs older than 30 days are pruned from the **default** `%TEMP%\Hostname-Rename` directory at the start of each run (`$script:LOG_RETENTION_DAYS` in `logging.ps1`). A custom `-LogPath` is never pruned — retention on a shared log share is the share owner's policy. Retention follows the same never-block rule, and a `-WhatIf` run prunes nothing.
 
 ---
 

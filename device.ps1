@@ -14,7 +14,13 @@ function Get-Department {
 
     if ($NonInteractive) { return "WS" }
 
+    # Bounded retries: on exhausted/redirected stdin Read-Host returns "" forever,
+    # which previously spun this loop for eternity (F-08.4).
+    $attempts = 0
     do {
+        if (++$attempts -gt 10) {
+            throw "No valid department code after 10 attempts (is console input redirected?). Use -NonInteractive, or enter one of: $($script:VALID_DEPARTMENTS -join ', ')."
+        }
         $raw  = Read-Host "Department ($($script:VALID_DEPARTMENTS -join ', '))"
         $dept = $raw.ToUpper().Trim()
     } until ($script:VALID_DEPARTMENTS -contains $dept)
@@ -36,47 +42,54 @@ function Resolve-DeviceType {
     if ($ProductType -ne 1)                                       { return "SV" }
     if ($ChassisTypes -contains 30 -or $ChassisTypes -contains 31) { return "TB" }
     if ($Architecture -eq 5)                                      { return "MD" }
+    # Chassis 9 (Laptop) / 10 (Notebook) is the authoritative LT signal; the
+    # Model substring stays as a fallback for firmware that reports chassis 3/etc.
+    if ($ChassisTypes -contains 9 -or $ChassisTypes -contains 10) { return "LT" }
     if ($Model -match "Laptop")                                   { return "LT" }
     if ($ChassisTypes -contains 5)                                { return "PB" }
     return "DT"
 }
 
 function Get-DeviceType {
-    # Auto-detects device type from WMI (parallel CIM queries -> Resolve-DeviceType), then allows an interactive override.
+    # Auto-detects device type from WMI (sequential CIM queries -> Resolve-DeviceType), then allows an interactive override.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
         Justification = 'Interactive prompt header paired with Read-Host -- must write to host, not the success stream.')]
     param (
-        [switch]$NonInteractive
+        [switch]$NonInteractive,
+        # A previously detected type (e.g. rename.ps1's pre-GUI probe) -- skips the
+        # WMI queries so a GUI-fallback run does not pay the detection cost twice
+        # (F-08.6); the interactive override prompt below still runs either way.
+        [string]$Detected
     )
 
     $type = "DT"
-    $jobs = @()     # declared before try so finally can always reach it
 
-    try {
-        $jobs = @(
-            (Get-CimInstance Win32_OperatingSystem -AsJob),
-            (Get-CimInstance Win32_ComputerSystem  -AsJob),
-            (Get-CimInstance Win32_Processor       -AsJob),
-            (Get-CimInstance Win32_SystemEnclosure -AsJob)
-        )
+    if ($Detected -and $script:DEVICE_TYPES -contains $Detected) {
+        $type = $Detected
+    } else {
+        try {
+            # Sequential on purpose: Get-CimInstance has no -AsJob parameter on any
+            # PowerShell edition (BUG-015 -- the previous "parallel" calls threw a
+            # binding error and every device silently detected as DT). Each local
+            # query is tens of milliseconds; parallelism buys nothing here.
+            $os  = Get-CimInstance Win32_OperatingSystem
+            $cs  = Get-CimInstance Win32_ComputerSystem
+            $cpu = Get-CimInstance Win32_Processor
+            $enc = Get-CimInstance Win32_SystemEnclosure
 
-        $os  = $jobs[0] | Wait-Job | Receive-Job
-        $cs  = $jobs[1] | Wait-Job | Receive-Job
-        $cpu = $jobs[2] | Wait-Job | Receive-Job
-        $enc = $jobs[3] | Wait-Job | Receive-Job
+            # Win32_SystemEnclosure may return multiple instances; flatten. @() keeps it an array even if $enc is $null (StrictMode-safe).
+            $chassis = @($enc | ForEach-Object { $_.ChassisTypes })
 
-        # Win32_SystemEnclosure may return multiple instances; flatten. @() keeps it an array even if $enc is $null (StrictMode-safe).
-        $chassis = @($enc | ForEach-Object { $_.ChassisTypes })
-
-        $type = Resolve-DeviceType `
-            -Model        $cs.Model `
-            -ProductType  ([int]$os.ProductType) `
-            -Architecture ([int]$cpu.Architecture) `
-            -ChassisTypes ([int[]]$chassis)
-    } catch {
-        Write-Warning "WMI query failed during device type detection -- defaulting to DT."
-    } finally {
-        $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+            $type = Resolve-DeviceType `
+                -Model        $cs.Model `
+                -ProductType  ([int]$os.ProductType) `
+                -Architecture ([int]$cpu.Architecture) `
+                -ChassisTypes ([int[]]$chassis)
+        } catch {
+            # Surface the real error -- a generic message is how BUG-015 masqueraded
+            # as a WMI failure for three releases.
+            Write-Warning "Device type detection failed -- defaulting to DT. ($($_.Exception.Message))"
+        }
     }
 
     if (-not $NonInteractive) {
@@ -158,7 +171,7 @@ function Get-UserName {
 
     # @() forces an array even when Get-ChildItem returns one object; .Count would otherwise throw under StrictMode.
     $profiles = @(
-        Get-ChildItem -Path $root -Directory |
+        Get-ChildItem -LiteralPath $root -Directory |
             Where-Object { $_.Name -notin $systemFolders } |
             Sort-Object  LastWriteTime -Descending
     )
@@ -168,7 +181,10 @@ function Get-UserName {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($Username)) {
-        $profiles = @($profiles | Where-Object { $_.Name -like "*$Username*" })
+        # Escape wildcard metacharacters so -Username is matched as a literal substring,
+        # not a pattern (a '*'/'?'/'[' in the value would otherwise match unintended profiles).
+        $pattern  = "*" + [System.Management.Automation.WildcardPattern]::Escape($Username) + "*"
+        $profiles = @($profiles | Where-Object { $_.Name -like $pattern })
         if ($profiles.Count -eq 0) {
             throw "No profile folder under '$root' matches -Username '$Username'."
         }
@@ -185,7 +201,12 @@ function Get-UserName {
         }
         Write-Host ""
 
+        # Bounded retries, same rationale as Get-Department (F-08.4).
+        $attempts = 0
         do {
+            if (++$attempts -gt 10) {
+                throw "No valid profile selection after 10 attempts (is console input redirected?). Use -NonInteractive or -Username."
+            }
             $choice = Read-Host "User number"
         } until ($choice -as [int] -and [int]$choice -ge 1 -and [int]$choice -le $profiles.Count)
 

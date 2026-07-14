@@ -17,6 +17,56 @@
 # never block a rename.
 $script:GUI_UNAVAILABLE = "GUI_UNAVAILABLE"
 
+function Resolve-GatewayPreview {
+    # Pure, unit-testable: maps a Gateway-mode selection (context/department/type/serial)
+    # to a preview result. WPF-free -- Update-RenameGuiPreview binds the result to controls;
+    # this function contains no control references and can be tested exactly like
+    # Resolve-DeviceType / ConvertTo-SerialLast4.
+    #
+    # Returns a hashtable:
+    #   Status = 'NoSelection' -- Department or Type not yet chosen; no name to show
+    #   Status = 'Overflow'    -- even the department-dropped form exceeds 15 chars
+    #                             (only possible with malformed ORG/WH/LOC); FullLength set
+    #   Status = 'Ok'          -- Name is set; DeptDropped is true when New-DeviceName had
+    #                             to shorten the full form to fit 15 chars
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure string-builder/dispatcher; no state change.')]
+    param (
+        [Parameter(Mandatory)]
+        [hashtable]$Context,
+
+        [string]$Department,
+        [string]$Type,
+
+        [Parameter(Mandatory)]
+        [string]$Serial
+    )
+
+    if (-not $Department -or -not $Type) {
+        return @{ Status = 'NoSelection'; Name = $null; DeptDropped = $false; FullLength = 0 }
+    }
+
+    # Reconstruct the untruncated name so a department drop is detectable:
+    # New-DeviceName returns the shortened form when the full form exceeds 15
+    # chars, so result-differs-from-full is exactly the "department dropped" condition.
+    $full = "{0}{1}{2}-{3}{4}-{5}" -f `
+        $Context.ORG, $Context.WH, $Context.LOC, $Department, $Type, $Serial
+
+    try {
+        $name = New-DeviceName `
+            -ORG        $Context.ORG `
+            -WH         $Context.WH `
+            -LOC        $Context.LOC `
+            -Department $Department `
+            -Type       $Type `
+            -Serial     $Serial
+        return @{ Status = 'Ok'; Name = $name; DeptDropped = ($name -ne $full); FullLength = $full.Length }
+    } catch {
+        # Even the department-dropped form exceeds 15 chars.
+        return @{ Status = 'Overflow'; Name = $null; DeptDropped = $false; FullLength = $full.Length }
+    }
+}
+
 function Update-RenameGuiPreview {
     # Recomputes the live preview from the current control state. Called on
     # every mode/selection change. Uses the same builders as the console path
@@ -62,40 +112,28 @@ function Update-RenameGuiPreview {
         $typeItem = $c.TypeCombo.SelectedItem
         $type     = if ($typeItem) { $typeItem.Tag } else { $null }
 
-        if ($dept -and $type) {
-            # Reconstruct the untruncated name so a department drop is
-            # detectable: New-DeviceName returns the shortened form when the
-            # full form exceeds 15 chars, so result-differs-from-full is
-            # exactly the "department dropped" condition.
-            $full = "{0}{1}{2}-{3}{4}-{5}" -f `
-                $in.Context.ORG, $in.Context.WH, $in.Context.LOC, $dept, $type, $in.SerialLast4
+        $preview = Resolve-GatewayPreview -Context $in.Context -Department $dept -Type $type -Serial $in.SerialLast4
 
-            try {
-                $name = New-DeviceName `
-                    -ORG        $in.Context.ORG `
-                    -WH         $in.Context.WH `
-                    -LOC        $in.Context.LOC `
-                    -Department $dept `
-                    -Type       $type `
-                    -Serial     $in.SerialLast4
-                $ok = $true
-
-                if ($name -ne $full) {
+        switch ($preview.Status) {
+            'Ok' {
+                $name = $preview.Name
+                $ok   = $true
+                if ($preview.DeptDropped) {
                     $c.DeptWarningText.Visibility = [System.Windows.Visibility]::Visible
                 }
-            } catch {
-                # Even the department-dropped form exceeds 15 chars -- only
-                # possible with malformed ORG/WH/LOC values in GATEWAY_MAP.
-                # Show the error in the window instead of letting the
-                # exception escape a WPF event handler.
+            }
+            'Overflow' {
+                # Show the error in the window instead of letting the exception
+                # that produced it escape a WPF event handler.
                 $c.PreviewText.Text       = "(name exceeds 15 characters -- check GATEWAY_MAP values)"
                 $c.PreviewText.Foreground = $errorBrush
-                $c.CharCountText.Text     = "{0} / 15" -f $full.Length
+                $c.CharCountText.Text     = "{0} / 15" -f $preview.FullLength
             }
-        } else {
-            $c.PreviewText.Text       = "(select a department)"
-            $c.PreviewText.Foreground = $normalBrush
-            $c.CharCountText.Text     = "- / 15"
+            default {
+                $c.PreviewText.Text       = "(select a department)"
+                $c.PreviewText.Foreground = $normalBrush
+                $c.CharCountText.Text     = "- / 15"
+            }
         }
     }
 
@@ -110,63 +148,12 @@ function Update-RenameGuiPreview {
     $c.DryRunButton.IsEnabled = $ok
 }
 
-function Show-RenameGui {
-    # Shows the WPF input window and returns:
-    #   $null                     -- operator cancelled (Cancel button or titlebar X)
-    #   $script:GUI_UNAVAILABLE   -- GUI cannot run here; caller falls back to console
-    #   hashtable                 -- @{ Mode; Department; Type; ProfileName; WhatIf }
-    # This function only collects inputs -- it never renames anything.
-    param (
-        [Parameter(Mandatory)]
-        [hashtable]$Context,            # resolved ORG/WH/LOC from Get-NetworkContext
-
-        [Parameter(Mandatory)]
-        [string]$DetectedType,          # from Get-DeviceType -NonInteractive
-
-        [Parameter(Mandatory)]
-        [string]$SerialLast4,           # from Get-SerialLast4
-
-        [Parameter(Mandatory)]
-        [string]$CurrentName,           # current hostname
-
-        [AllowEmptyCollection()]
-        [string[]]$ProfileCandidates = @(),   # raw profile folder names, pre-filtered/sorted by the caller
-
-        [switch]$IsFallbackContext,     # true when Get-NetworkContext returned $FALLBACK_CONTEXT
-
-        [ValidateSet("Gateway", "User")]
-        [string]$InitialMode = "Gateway"
-    )
-
-    # -- Preconditions -- any failure warns and returns the sentinel so the
-    #    caller can fall back to the existing console prompts.
-
-    # No interactive desktop (service, scheduled task, some MDM contexts):
-    # WPF has nowhere to render.
-    if (-not [Environment]::UserInteractive) {
-        Write-Warning "GUI unavailable: session is not user-interactive. Falling back to console prompts."
-        return $script:GUI_UNAVAILABLE
-    }
-
-    # WPF windows can only be created on an STA thread. Console hosts default
-    # to STA on Windows, but background jobs, custom runspaces, and some
-    # embedded hosts run MTA -- creating a Window there throws, so check
-    # up front rather than crash mid-run.
-    if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne
-        [System.Threading.ApartmentState]::STA) {
-        Write-Warning "GUI unavailable: current thread is not STA (WPF requires STA). Falling back to console prompts."
-        return $script:GUI_UNAVAILABLE
-    }
-
-    # PresentationFramework is absent on Server Core / stripped images.
-    try {
-        Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
-    } catch {
-        Write-Warning "GUI unavailable: PresentationFramework could not be loaded ($($_.Exception.Message)). Falling back to console prompts."
-        return $script:GUI_UNAVAILABLE
-    }
-
-    # -- XAML --
+function Get-RenameGuiXaml {
+    # Returns the static window XAML as a string. Pulled out of Show-RenameGui so
+    # a test can parse it with XamlReader (a smoke test that the markup is well-formed)
+    # without needing an interactive/STA session -- this function itself has no WPF
+    # dependency at all, it just returns text.
+    #
     # SECURITY: this here-string is STATIC and single-quoted. Runtime data
     # (profile folder names, hostnames, serials, WMI model strings) is NEVER
     # interpolated into it -- XAML is executable markup (ObjectDataProvider
@@ -174,7 +161,11 @@ function Show-RenameGui {
     # string spliced into it would be an injection vector. All values are
     # populated via properties (.Text, Items.Add, Tag) AFTER parsing, where
     # they are inert data. Keep it that way.
-    $xaml = @'
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure string constant; no state change.')]
+    param ()
+
+    return @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Hostname Rename"
@@ -265,11 +256,68 @@ function Show-RenameGui {
     </StackPanel>
 </Window>
 '@
+}
+
+function Show-RenameGui {
+    # Shows the WPF input window and returns:
+    #   $null                     -- operator cancelled (Cancel button or titlebar X)
+    #   $script:GUI_UNAVAILABLE   -- GUI cannot run here; caller falls back to console
+    #   hashtable                 -- @{ Mode; Department; Type; ProfileName; WhatIf }
+    # This function only collects inputs -- it never renames anything.
+    param (
+        [Parameter(Mandatory)]
+        [hashtable]$Context,            # resolved ORG/WH/LOC from Get-NetworkContext
+
+        [Parameter(Mandatory)]
+        [string]$DetectedType,          # from Get-DeviceType -NonInteractive
+
+        [Parameter(Mandatory)]
+        [string]$SerialLast4,           # from Get-SerialLast4
+
+        [Parameter(Mandatory)]
+        [string]$CurrentName,           # current hostname
+
+        [AllowEmptyCollection()]
+        [string[]]$ProfileCandidates = @(),   # raw profile folder names, pre-filtered/sorted by the caller
+
+        [switch]$IsFallbackContext,     # true when Get-NetworkContext returned $FALLBACK_CONTEXT
+
+        [ValidateSet("Gateway", "User")]
+        [string]$InitialMode = "Gateway"
+    )
+
+    # -- Preconditions -- any failure warns and returns the sentinel so the
+    #    caller can fall back to the existing console prompts.
+
+    # No interactive desktop (service, scheduled task, some MDM contexts):
+    # WPF has nowhere to render.
+    if (-not [Environment]::UserInteractive) {
+        Write-Warning "GUI unavailable: session is not user-interactive. Falling back to console prompts."
+        return $script:GUI_UNAVAILABLE
+    }
+
+    # WPF windows can only be created on an STA thread. Console hosts default
+    # to STA on Windows, but background jobs, custom runspaces, and some
+    # embedded hosts run MTA -- creating a Window there throws, so check
+    # up front rather than crash mid-run.
+    if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne
+        [System.Threading.ApartmentState]::STA) {
+        Write-Warning "GUI unavailable: current thread is not STA (WPF requires STA). Falling back to console prompts."
+        return $script:GUI_UNAVAILABLE
+    }
+
+    # PresentationFramework is absent on Server Core / stripped images.
+    try {
+        Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
+    } catch {
+        Write-Warning "GUI unavailable: PresentationFramework could not be loaded ($($_.Exception.Message)). Falling back to console prompts."
+        return $script:GUI_UNAVAILABLE
+    }
 
     $result = $null
 
     try {
-        $window = [System.Windows.Markup.XamlReader]::Parse($xaml)
+        $window = [System.Windows.Markup.XamlReader]::Parse((Get-RenameGuiXaml))
 
         # Controls looked up once; kept in script scope because WPF event
         # handler scriptblocks do not reliably see function-local variables

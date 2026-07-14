@@ -3,8 +3,8 @@
 # CI pipeline for Hostname-Rename.
 #
 # Jobs:
-#   lint     -- PSScriptAnalyzer on all .ps1 files (PS 5.1 + 7.x)
-#   test     -- Pester unit tests
+#   lint     -- PSScriptAnalyzer on all .ps1 files (real PS 5.1 + 7.x legs -- BUG-013a)
+#   test     -- Pester unit tests (real PS 5.1 + 7.x legs)
 #   manifest -- Verify $MANIFEST hashes in launcher.ps1 match the module files
 #   placeholder -- Fail if REPLACE_WITH_COMMIT_SHA was accidentally committed
 
@@ -27,20 +27,30 @@ jobs:
     name: PSScriptAnalyzer
     runs-on: windows-latest
     strategy:
+      # The shell IS the version selector (BUG-013a / F-04): 'powershell' is real
+      # Windows PowerShell 5.1, 'pwsh' is PS 7.x. The old matrix declared a
+      # ps-version axis that no step referenced, so both legs ran under pwsh.
       matrix:
-        ps-version: ["5.1", "latest"]   # 5.1 = Windows PowerShell, latest = PS 7.x
+        include:
+          - ps-version: "5.1"
+            shell: powershell
+          - ps-version: "7.x"
+            shell: pwsh
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install PSScriptAnalyzer
-        shell: pwsh
+        shell: ${{ matrix.shell }}
         run: |
+          # TLS 1.2 for the 5.1 leg -- Windows PowerShell may not offer it to
+          # PSGallery by default. No-op where it is already enabled.
+          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
 
-      - name: Run PSScriptAnalyzer
-        shell: pwsh
+      - name: Run PSScriptAnalyzer (PowerShell ${{ matrix.ps-version }})
+        shell: ${{ matrix.shell }}
         run: |
           $files  = Get-ChildItem -Path . -Filter "*.ps1" -Recurse
           $issues = $files | ForEach-Object {
@@ -59,16 +69,30 @@ jobs:
     name: Pester Tests
     runs-on: windows-latest
     needs: lint
+    strategy:
+      # Same shell-as-version-selector pattern as lint (F-04): the suite claims
+      # 5.1 support, so run it under real Windows PowerShell too.
+      matrix:
+        include:
+          - ps-version: "5.1"
+            shell: powershell
+          - ps-version: "7.x"
+            shell: pwsh
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Pester
+        shell: ${{ matrix.shell }}
         run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
           Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module -Name Pester -MinimumVersion 5.0 -Force -Scope CurrentUser
+          # -SkipPublisherCheck: Windows PowerShell ships Pester 3.4 signed with a
+          # different certificate; without it the 5.1 leg cannot install Pester 5.
+          Install-Module -Name Pester -MinimumVersion 5.0 -Force -Scope CurrentUser -SkipPublisherCheck
 
-      - name: Run Pester
+      - name: Run Pester (PowerShell ${{ matrix.ps-version }})
+        shell: ${{ matrix.shell }}
         run: |
           $cfg = New-PesterConfiguration
           $cfg.Run.Path       = "./tests"
@@ -88,7 +112,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pester-results
+          name: pester-results-ps${{ matrix.ps-version }}   # unique per leg; v4 rejects duplicate names
           path: test-results.xml
 
   # Manifest hash validation
@@ -105,15 +129,24 @@ jobs:
           # Parse the $MANIFEST block from launcher.ps1
           $launcherContent = Get-Content ./launcher.ps1 -Raw
 
-          # Extract hash entries: "filename.ps1" = "hexhash"
+          # Extract hash entries: "filename.ps1" = "hexhash". Case-insensitive hex
+          # (F-08.2): the old [a-f0-9] silently SKIPPED verification of an
+          # uppercase-pasted hash instead of checking it.
           $manifestEntries = [regex]::Matches(
               $launcherContent,
-              '"(?<file>[^"]+\.ps1)"\s*=\s*"(?<hash>[a-f0-9]{64})"'
+              '"(?<file>[^"]+\.ps1)"\s*=\s*"(?<hash>[a-fA-F0-9]{64})"'
           )
 
           if ($manifestEntries.Count -eq 0) {
-              Write-Warning "No hash entries found in `$MANIFEST — skipping check (placeholder values present)."
-              exit 0
+              if ($launcherContent -match 'REPLACE_WITH_COMMIT_SHA') {
+                  Write-Warning "No hash entries found in `$MANIFEST — skipping check (unpinned dev/template state)."
+                  exit 0
+              }
+              # Pinned SHA + zero parsable hashes = the manifest was never
+              # regenerated. Fail loudly instead of reporting a green check that
+              # verified nothing (F-08.2, mirrors the launcher's own mixed-manifest guard).
+              Write-Error "launcher.ps1 pins a commit SHA but no `$MANIFEST hash entries parsed — run .\tools\Get-Hashes.ps1 and paste the full block."
+              exit 1
           }
 
           $failed = $false
@@ -129,8 +162,10 @@ jobs:
                   continue
               }
 
-              $content  = Get-Content $filePath -Raw -Encoding UTF8
-              $bytes    = [System.Text.Encoding]::UTF8.GetBytes($content)
+              # Raw on-disk bytes -- byte-identical with tools/Get-Hashes.ps1 and with
+              # what raw.githubusercontent.com serves (BUG-017; .gitattributes pins
+              # *.ps1 to LF so checkout bytes equal blob bytes).
+              $bytes    = [System.IO.File]::ReadAllBytes($filePath)
               $actualHash = ([BitConverter]::ToString(
                   [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
               ) -replace '-').ToLower()

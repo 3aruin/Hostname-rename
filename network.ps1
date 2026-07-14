@@ -18,10 +18,31 @@ $script:GATEWAY_MAP = @{
 $script:FALLBACK_CONTEXT = @{ ORG = "XX"; WH = "99"; LOC = "X" }
 
 function Get-DefaultGateway {
-    # First enabled adapter's default gateway IP, or $null if none.
+    # IPv4 next-hop of the lowest-effective-metric default route, or $null if none.
+    # Get-NetRoute is metric-aware, so an active VPN or a second NIC no longer wins
+    # by adapter-enumeration luck (BUG-019); effective metric = RouteMetric +
+    # InterfaceMetric, the same sum Windows uses for route selection. (The property
+    # is InterfaceMetric -- 'ifMetric' is only a display column, and Sort-Object on
+    # a nonexistent property silently does not sort.)
+    try {
+        $route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+            Where-Object { $_.NextHop -ne '0.0.0.0' } |
+            Sort-Object { [int]$_.RouteMetric + [int]$_.InterfaceMetric } |
+            Select-Object -First 1
+        if ($route) { return $route.NextHop }
+    } catch {
+        # No IPv4 default route, or Get-NetRoute unavailable -- fall through to the
+        # legacy adapter query below.
+        Write-Verbose "Get-NetRoute lookup failed ($($_.Exception.Message)) -- using the legacy adapter query."
+    }
+
+    # Legacy fallback, filtered to IPv4: GATEWAY_MAP is IPv4-keyed and
+    # DefaultIPGateway may also list IPv6 literals that could never match it.
     (Get-CimInstance Win32_NetworkAdapterConfiguration |
         Where-Object { $_.IPEnabled -and $_.DefaultIPGateway } |
-        Select-Object -ExpandProperty DefaultIPGateway -First 1)
+        Select-Object -ExpandProperty DefaultIPGateway |
+        Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' } |
+        Select-Object -First 1)
 }
 
 function Get-NetworkContext {

@@ -15,7 +15,9 @@ function Rename-DeviceSmart {
         [switch]$Gui,
         [string]$FolderPath,
         [string]$Username,
-        [string]$LogPath
+        [string]$LogPath,
+        [ValidateRange(1, 300)]
+        [int]$PromptTimeoutSeconds = 8
     )
 
     # Hard stop BEFORE any work (same philosophy as BUG-002 -- never guess in
@@ -33,6 +35,14 @@ function Rename-DeviceSmart {
     Initialize-Log -LogPath $LogPath
     Write-Log -Level INFO -Message ("Run started. NonInteractive={0} Folder={1} Gateway={2} Gui={3}" -f `
         [bool]$NonInteractive, [bool]$Folder, [bool]$Gateway, [bool]$Gui)
+
+    # A UNC -FolderPath makes the profile enumeration below authenticate this (elevated)
+    # machine to a remote SMB host (NTLM) -- same coercion/leak concern as a UNC -LogPath.
+    # Warn once, up front, covering both the GUI and console profile-enumeration paths.
+    if (-not [string]::IsNullOrWhiteSpace($FolderPath) -and $FolderPath -match '^\\\\') {
+        Write-Warning "FolderPath '$FolderPath' is a UNC path -- enumerating it authenticates this machine to that host over SMB (NTLM). Use it only against a trusted share."
+        Write-Log -Level WARN -Message "FolderPath is a UNC path ('$FolderPath') -- SMB (NTLM) authentication to a remote host will occur during profile enumeration."
+    }
 
     # Resolve gateway first (both modes need location); NonInteractive forwarded so an unmapped gateway throws instead of falling back.
     $gatewayIP = Get-DefaultGateway
@@ -54,8 +64,9 @@ function Rename-DeviceSmart {
     # MTA thread, missing PresentationFramework) it returns the
     # GUI_UNAVAILABLE sentinel and we fall through to the console prompts:
     # a GUI failure must never block a rename.
-    $guiInputs = $null
-    $guiSerial = $null
+    $guiInputs       = $null
+    $guiSerial       = $null
+    $guiDetectedType = $null
     if ($Gui) {
         # Fallback detection: Get-NetworkContext returns $script:FALLBACK_CONTEXT
         # (network.ps1) for an unmapped gateway in interactive mode. Compared by
@@ -69,8 +80,8 @@ function Rename-DeviceSmart {
         # serial, and profile enumeration all run before it opens.
         # -NonInteractive on Get-DeviceType skips its console override prompt
         # only -- the type ComboBox in the window is the override.
-        $detectedType = Get-DeviceType -NonInteractive
-        $guiSerial    = Get-SerialLast4
+        $guiDetectedType = Get-DeviceType -NonInteractive
+        $guiSerial       = Get-SerialLast4
 
         # Profile candidates for the User panel. Mirrors Get-UserName's
         # enumeration rules (device.ps1: system-folder exclusions, most
@@ -85,7 +96,7 @@ function Rename-DeviceSmart {
                 "Administrator", "Guest", "WDAGUtilityAccount"
             )
             $profileCandidates = @(
-                Get-ChildItem -Path $profileRoot -Directory |
+                Get-ChildItem -LiteralPath $profileRoot -Directory |
                     Where-Object { $_.Name -notin $systemFolders } |
                     Sort-Object  LastWriteTime -Descending |
                     Select-Object -ExpandProperty Name
@@ -97,7 +108,10 @@ function Rename-DeviceSmart {
             throw "Profile search path '$profileRoot' does not exist. Check -FolderPath or use Gateway mode."
         }
         if (-not [string]::IsNullOrWhiteSpace($Username)) {
-            $profileCandidates = @($profileCandidates | Where-Object { $_ -like "*$Username*" })
+            # Escape wildcard metacharacters -- match -Username as a literal substring,
+            # mirroring Get-UserName so the GUI and console candidate lists stay identical.
+            $userPattern       = "*" + [System.Management.Automation.WildcardPattern]::Escape($Username) + "*"
+            $profileCandidates = @($profileCandidates | Where-Object { $_ -like $userPattern })
             if ($profileCandidates.Count -eq 0) {
                 throw "No profile folder under '$profileRoot' matches -Username '$Username'."
             }
@@ -112,7 +126,7 @@ function Rename-DeviceSmart {
         Write-Log -Level INFO -Message "GUI requested -- opening Show-RenameGui."
         $guiResult = Show-RenameGui `
             -Context           $ctx `
-            -DetectedType      $detectedType `
+            -DetectedType      $guiDetectedType `
             -SerialLast4       $guiSerial `
             -CurrentName       $env:COMPUTERNAME `
             -ProfileCandidates $profileCandidates `
@@ -139,7 +153,8 @@ function Rename-DeviceSmart {
         $guiInputs.Mode
     } else {
         Select-NamingMode -Folder:$Folder -Gateway:$Gateway -NonInteractive:$NonInteractive `
-                          -FolderPath $FolderPath -Username $Username
+                          -FolderPath $FolderPath -Username $Username `
+                          -PromptTimeoutSeconds $PromptTimeoutSeconds
     }
     Write-Log -Level INFO -Message "Naming mode: $mode"
 
@@ -164,8 +179,12 @@ function Rename-DeviceSmart {
             $serial = $guiSerial   # fetched before the window opened
         } else {
             $dept   = Get-Department -NonInteractive:$NonInteractive
-            $type   = Get-DeviceType -NonInteractive:$NonInteractive
-            $serial = Get-SerialLast4
+            # GUI-fallback reuse (F-08.6): when the pre-GUI probe already detected
+            # the type and fetched the serial, don't pay the WMI cost twice -- a
+            # real cost now that detection works (BUG-015). -Detected still leaves
+            # the console override prompt available.
+            $type   = Get-DeviceType -NonInteractive:$NonInteractive -Detected $guiDetectedType
+            $serial = if ($guiSerial) { $guiSerial } else { Get-SerialLast4 }
         }
         Write-Log -Level INFO -Message ("Gateway-mode parts: DEPT={0} TYPE={1} SERIAL={2}" -f $dept, $type, $serial)
 
